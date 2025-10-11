@@ -1,5 +1,3 @@
----
-
 # 🧬 **PureAST**
 
 **Functorial AST Extraction and Code Generation Toolkit**
