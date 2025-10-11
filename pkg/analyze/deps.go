@@ -1,6 +1,8 @@
 package analyze
 
 import (
+	"go/ast"
+
 	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
 	"github.com/vinodhalaharvi/purekernels/pkg/fold"
 	"github.com/vinodhalaharvi/purekernels/pkg/monoid"
@@ -348,4 +350,117 @@ func (g DependencyGraph) SubgraphFor(targetName string) DependencyGraph {
 	}
 
 	return NewDependencyGraph(subDecls)
+}
+
+// FindFunctionsReturning finds all functions that return the given type
+func (g DependencyGraph) FindFunctionsReturning(typeName string) []string {
+	functions := []string{}
+
+	for name, decl := range g.Decls {
+		// Check if it's a function declaration
+		if funcDecl, ok := decl.Decl.(*ast.FuncDecl); ok {
+			// Skip methods (they have receivers)
+			if funcDecl.Recv != nil {
+				continue
+			}
+
+			// Check if it returns the type
+			if funcReturnsType(funcDecl, typeName) {
+				functions = append(functions, name)
+			}
+		}
+	}
+
+	return functions
+}
+
+// FindMethodsForType finds all methods on a given type
+func (g DependencyGraph) FindMethodsForType(typeName string) []string {
+	methods := []string{}
+
+	for name, decl := range g.Decls {
+		// Check if it's a method (function with receiver)
+		if funcDecl, ok := decl.Decl.(*ast.FuncDecl); ok {
+			if funcDecl.Recv != nil {
+				recvType := extractReceiverTypeName(funcDecl.Recv)
+				if recvType == typeName {
+					methods = append(methods, name)
+				}
+			}
+		}
+	}
+
+	return methods
+}
+
+// funcReturnsType checks if function returns the given type
+func funcReturnsType(funcDecl *ast.FuncDecl, typeName string) bool {
+	if funcDecl.Type.Results == nil {
+		return false
+	}
+
+	for _, field := range funcDecl.Type.Results.List {
+		if matchesType(field.Type, typeName) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// matchesType checks if an expression matches a type name
+func matchesType(expr ast.Expr, typeName string) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name == typeName
+	case *ast.StarExpr:
+		return matchesType(t.X, typeName)
+	}
+	return false
+}
+
+// extractReceiverTypeName gets the receiver type name
+func extractReceiverTypeName(recv *ast.FieldList) string {
+	if recv == nil || len(recv.List) == 0 {
+		return ""
+	}
+
+	field := recv.List[0]
+	switch t := field.Type.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		if ident, ok := t.X.(*ast.Ident); ok {
+			return ident.Name
+		}
+	}
+	return ""
+}
+
+// ResolveWithAssociatedCode resolves deps AND includes functions/methods for the type
+func (g DependencyGraph) ResolveWithAssociatedCode(targetName string) astpkg.Dependencies {
+	// Get transitive dependencies
+	deps := g.ResolveTransitive(targetName)
+
+	// Find functions that return this type
+	functions := g.FindFunctionsReturning(targetName)
+	for _, fn := range functions {
+		deps.Functions = deps.Functions.Insert(fn)
+	}
+
+	// Find methods on this type
+	methods := g.FindMethodsForType(targetName)
+	for _, method := range methods {
+		deps.Functions = deps.Functions.Insert(method)
+	}
+
+	// Also resolve dependencies of these functions/methods
+	depMonoid := astpkg.NewDependencyMonoid()
+
+	for _, fn := range append(functions, methods...) {
+		fnDeps := g.ResolveTransitive(fn)
+		deps = depMonoid.Combine(deps, fnDeps)
+	}
+
+	return deps
 }
