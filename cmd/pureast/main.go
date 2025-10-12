@@ -197,68 +197,6 @@ func loadPackage(cfg Config) result.Result[astpkg.PackageNode] {
 	return result.Ok(pkgNode)
 }
 
-// buildAndSaveIndex builds and saves a search index
-func buildAndSaveIndex(cfg Config, pkgNode astpkg.PackageNode) result.Result[string] {
-	fmt.Fprintf(os.Stderr, "Building search index...\n")
-
-	// Build index
-	idx := index.BuildIndex(pkgNode)
-
-	// Save to file
-	if err := index.SaveIndex(idx, cfg.IndexPath); err != nil {
-		return result.Err[string](fmt.Errorf("failed to save index: %w", err))
-	}
-
-	msg := fmt.Sprintf("Index saved to %s\n", cfg.IndexPath)
-	fmt.Fprintf(os.Stderr, "%s", msg)
-	fmt.Fprintf(os.Stderr, "Indexed %d symbols\n", len(idx.Symbols))
-
-	return result.Ok(msg)
-}
-
-// fuzzySearchMode performs fuzzy search using the index
-func fuzzySearchMode(cfg Config, pkgNode astpkg.PackageNode) result.Result[string] {
-	fmt.Fprintf(os.Stderr, "Fuzzy searching for: %s\n", cfg.SearchPattern)
-
-	// Try to load existing index, otherwise build new one
-	idx := loadOrBuildIndex(cfg, pkgNode)
-
-	// Create search pattern
-	var pattern = index.SearchPattern{
-		SymbolPattern: cfg.SearchPattern,
-		Kind:          "", // Could be extended with -kind flag
-		PackageName:   "",
-	} // Perform fuzzy search using concurrent processing
-	matches := index.FuzzySearchIndexConcurrent(pattern, idx, cfg.BatchSize)
-
-	if len(matches) == 0 {
-		msg := fmt.Sprintf("No matches found for pattern: %s\n", cfg.SearchPattern)
-		fmt.Print(msg)
-		return result.Ok(msg)
-	}
-
-	// Format and output results
-	output := formatFuzzyResults(matches, cfg.SearchPattern)
-	fmt.Print(output)
-
-	return result.Ok(output)
-}
-
-// loadOrBuildIndex loads index from file or builds a new one
-func loadOrBuildIndex(cfg Config, pkgNode astpkg.PackageNode) index.Index {
-	// Try to load from file
-	if _, err := os.Stat(cfg.IndexPath); err == nil {
-		if idx, err := index.LoadIndex(cfg.IndexPath); err == nil {
-			fmt.Fprintf(os.Stderr, "Loaded index from %s\n", cfg.IndexPath)
-			return idx
-		}
-	}
-
-	// Build new index
-	fmt.Fprintf(os.Stderr, "Building new index...\n")
-	return index.BuildIndex(pkgNode)
-}
-
 // formatFuzzyResults formats fuzzy search results
 func formatFuzzyResults(matches []index.ScoredSymbol, pattern string) string {
 	var sb strings.Builder
@@ -419,6 +357,20 @@ func handleMultipleSymbols(
 
 // showMethodsFromPackage shows methods for a type
 func showMethodsFromPackage(typeName string, pkgNode astpkg.PackageNode) result.Result[string] {
+	// DEBUG: Check what we have
+	fmt.Fprintf(os.Stderr, "DEBUG: Package name: %s\n", pkgNode.Name)
+	fmt.Fprintf(os.Stderr, "DEBUG: Package has %d files\n", len(pkgNode.Files))
+
+	for i, fileNode := range pkgNode.Files {
+		hasAST := fileNode.File != nil
+		var declCount int
+		if fileNode.File != nil {
+			declCount = len(fileNode.File.Decls)
+		}
+		fmt.Fprintf(os.Stderr, "DEBUG: File %d: name=%s, hasAST=%v, astDecls=%d, nodeDecls=%d\n",
+			i, fileNode.Name, hasAST, declCount, len(fileNode.Decls))
+	}
+
 	// Collect methods from all files using parallel processing
 	methodMonoid := NewMethodNodeMonoid()
 
@@ -426,13 +378,20 @@ func showMethodsFromPackage(typeName string, pkgNode astpkg.PackageNode) result.
 		methodMonoid,
 		func(fileNode astpkg.FileNode) []astpkg.MethodNode {
 			if fileNode.File != nil {
-				return extract.ExtractMethods(typeName, fileNode.File)
+				extracted := extract.ExtractMethods(typeName, fileNode.File)
+				if len(extracted) > 0 {
+					fmt.Fprintf(os.Stderr, "DEBUG: Extracted %d methods for %s from this file\n", len(extracted), typeName)
+				}
+				return extracted
 			}
+			fmt.Fprintf(os.Stderr, "DEBUG: File has no AST, skipping\n")
 			return []astpkg.MethodNode{}
 		},
 		pkgNode.Files,
 		0,
 	).Value()
+
+	fmt.Fprintf(os.Stderr, "DEBUG: Total methods found: %d\n", len(methods))
 
 	if len(methods) == 0 {
 		msg := fmt.Sprintf("No methods found for type: %s\n", typeName)
@@ -596,4 +555,57 @@ func isRegexPattern(s string) bool {
 		}
 	}
 	return false
+}
+
+// In main.go
+
+// fuzzySearchMode performs fuzzy search using the index
+func fuzzySearchMode(cfg Config, pkgNode astpkg.PackageNode) result.Result[string] {
+	fmt.Fprintf(os.Stderr, "Fuzzy searching for: %s\n", cfg.SearchPattern)
+
+	// Always build index from current package for searching
+	// This ensures we search what's actually loaded
+	fmt.Fprintf(os.Stderr, "Building index from loaded package...\n")
+	idx := index.BuildIndex(pkgNode)
+
+	// Create search pattern
+	pattern := index.SearchPattern{
+		SymbolPattern: cfg.SearchPattern,
+		Kind:          "", // Could be extended with -kind flag
+		PackageName:   "",
+	}
+
+	// Perform fuzzy search using concurrent processing
+	matches := index.FuzzySearchIndexConcurrent(pattern, idx, cfg.BatchSize)
+
+	if len(matches) == 0 {
+		msg := fmt.Sprintf("No matches found for pattern: %s\n", cfg.SearchPattern)
+		fmt.Print(msg)
+		return result.Ok(msg)
+	}
+
+	// Format and output results
+	output := formatFuzzyResults(matches, cfg.SearchPattern)
+	fmt.Print(output)
+
+	return result.Ok(output)
+}
+
+// buildAndSaveIndex is ONLY for explicitly saving an index with -index flag
+func buildAndSaveIndex(cfg Config, pkgNode astpkg.PackageNode) result.Result[string] {
+	fmt.Fprintf(os.Stderr, "Building search index...\n")
+
+	// Build index
+	idx := index.BuildIndex(pkgNode)
+
+	// Save to file
+	if err := index.SaveIndex(idx, cfg.IndexPath); err != nil {
+		return result.Err[string](fmt.Errorf("failed to save index: %w", err))
+	}
+
+	msg := fmt.Sprintf("Index saved to %s\n", cfg.IndexPath)
+	fmt.Fprintf(os.Stderr, "%s", msg)
+	fmt.Fprintf(os.Stderr, "Indexed %d symbols\n", len(idx.Symbols))
+
+	return result.Ok(msg)
 }

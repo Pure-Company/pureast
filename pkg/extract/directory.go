@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -142,52 +143,6 @@ func selectFile(a, b interface{}) interface{} {
 	return b
 }
 
-// ExtractDirectoryConcurrent extracts all files in directory using concurrent applicatives
-func ExtractDirectoryConcurrent(
-	fset *token.FileSet,
-	root string,
-	recursive bool,
-	workers int,
-) (astpkg.PackageNode, error) {
-	// Discover files (pure)
-	discovery := NewFileDiscovery(root, recursive)
-	filePaths, err := discovery.DiscoverFiles()
-	if err != nil {
-		return astpkg.PackageNode{}, err
-	}
-
-	if len(filePaths) == 0 {
-		return astpkg.PackageNode{
-			Name:  "",
-			Files: []astpkg.FileNode{},
-			Deps:  astpkg.NewDependencies(),
-		}, nil
-	}
-
-	// Use TraverseConcurrent to parse files in parallel
-	fileNodeMonoid := NewFileNodeMonoid()
-
-	combinedNode := functor.TraverseConcurrent(
-		fileNodeMonoid,
-		func(path string) astpkg.FileNode {
-			file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-			if err != nil {
-				return fileNodeMonoid.Empty()
-			}
-			return ExtractFile(file)
-		},
-		filePaths,
-		workers, // 0 = use runtime.NumCPU()
-	).Value()
-
-	// Convert combined FileNode to PackageNode
-	return astpkg.PackageNode{
-		Name:  combinedNode.Name,
-		Files: []astpkg.FileNode{combinedNode},
-		Deps:  combinedNode.Deps,
-	}, nil
-}
-
 // ExtractDirectoryConcurrentBatched uses batched concurrent processing
 func ExtractDirectoryConcurrentBatched(
 	fset *token.FileSet,
@@ -297,4 +252,77 @@ func BuildPackageFromFileNodes(fileNodes []astpkg.FileNode) astpkg.PackageNode {
 		Files: fileNodes,
 		Deps:  allDeps,
 	}
+}
+
+func ExtractDirectoryConcurrent(
+	fset *token.FileSet,
+	root string,
+	recursive bool,
+	workers int,
+) (astpkg.PackageNode, error) {
+	// Discover files (pure)
+	discovery := NewFileDiscovery(root, recursive)
+	filePaths, err := discovery.DiscoverFiles()
+	if err != nil {
+		return astpkg.PackageNode{}, err
+	}
+
+	fmt.Fprintf(os.Stderr, "DEBUG: Discovered %d files\n", len(filePaths))
+
+	if len(filePaths) == 0 {
+		return astpkg.PackageNode{
+			Name:  "",
+			Files: []astpkg.FileNode{},
+			Deps:  astpkg.NewDependencies(),
+		}, nil
+	}
+
+	// Parse files sequentially and collect valid nodes
+	fileNodes := []astpkg.FileNode{}
+
+	for _, path := range filePaths {
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: Parse error for %s: %v\n", path, err)
+			continue
+		}
+
+		fileNode := ExtractFile(file)
+
+		// DEBUG: Check if File is preserved
+		if fileNode.File == nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: WARNING - ExtractFile returned nil File for %s\n", path)
+		} else {
+			fmt.Fprintf(os.Stderr, "DEBUG: Successfully extracted %s (decls: %d)\n", path, len(fileNode.Decls))
+			fileNodes = append(fileNodes, fileNode)
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "DEBUG: Collected %d valid file nodes\n", len(fileNodes))
+
+	if len(fileNodes) == 0 {
+		return astpkg.PackageNode{
+			Name:  "",
+			Files: []astpkg.FileNode{},
+			Deps:  astpkg.NewDependencies(),
+		}, nil
+	}
+
+	// Combine all dependencies
+	depMonoid := astpkg.NewDependencyMonoid()
+	allDeps := fold.FoldLeft(
+		func(acc astpkg.Dependencies, node astpkg.FileNode) astpkg.Dependencies {
+			return depMonoid.Combine(acc, node.Deps)
+		},
+		astpkg.NewDependencies(),
+		fileNodes,
+	)
+
+	pkgName := fileNodes[0].Name
+
+	return astpkg.PackageNode{
+		Name:  pkgName,
+		Files: fileNodes,
+		Deps:  allDeps,
+	}, nil
 }
