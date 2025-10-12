@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "pureast": {
+      "command": "/path/to/pureast-mcp",
+      "env": {
+        "PUREAST_WORKERS": "8"
+      }
+    }
+  }
+}
+
