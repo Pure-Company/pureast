@@ -1,13 +1,13 @@
 package extract
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
 	"github.com/vinodhalaharvi/purekernels/pkg/fold"
@@ -227,32 +227,7 @@ func ExtractMultipleFilesConcurrent(
 	return fileNodes, nil
 }
 
-// BuildPackageFromFileNodes constructs PackageNode from multiple FileNodes
-func BuildPackageFromFileNodes(fileNodes []astpkg.FileNode) astpkg.PackageNode {
-	if len(fileNodes) == 0 {
-		return astpkg.PackageNode{
-			Name:  "",
-			Files: []astpkg.FileNode{},
-			Deps:  astpkg.NewDependencies(),
-		}
-	}
-
-	// Combine all dependencies using monoid
-	depMonoid := astpkg.NewDependencyMonoid()
-	allDeps := fold.FoldLeft(
-		func(acc astpkg.Dependencies, node astpkg.FileNode) astpkg.Dependencies {
-			return depMonoid.Combine(acc, node.Deps)
-		},
-		astpkg.NewDependencies(),
-		fileNodes,
-	)
-
-	return astpkg.PackageNode{
-		Name:  fileNodes[0].Name,
-		Files: fileNodes,
-		Deps:  allDeps,
-	}
-}
+// pkg/extract/directory.go - Clean version without debug output
 
 func ExtractDirectoryConcurrent(
 	fset *token.FileSet,
@@ -260,14 +235,11 @@ func ExtractDirectoryConcurrent(
 	recursive bool,
 	workers int,
 ) (astpkg.PackageNode, error) {
-	// Discover files (pure)
 	discovery := NewFileDiscovery(root, recursive)
 	filePaths, err := discovery.DiscoverFiles()
 	if err != nil {
 		return astpkg.PackageNode{}, err
 	}
-
-	fmt.Fprintf(os.Stderr, "DEBUG: Discovered %d files\n", len(filePaths))
 
 	if len(filePaths) == 0 {
 		return astpkg.PackageNode{
@@ -277,30 +249,43 @@ func ExtractDirectoryConcurrent(
 		}, nil
 	}
 
-	// Parse files sequentially and collect valid nodes
-	fileNodes := []astpkg.FileNode{}
+	// Mutex to protect FileSet (not thread-safe)
+	var fsetMutex sync.Mutex
 
-	for _, path := range filePaths {
-		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "DEBUG: Parse error for %s: %v\n", path, err)
-			continue
-		}
+	// Parse files in parallel using ParMapWithWorkers
+	fileNodes := functor.ParMapWithWorkers(
+		func(path string) astpkg.FileNode {
+			// Lock during parse
+			fsetMutex.Lock()
+			file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+			fsetMutex.Unlock()
 
-		fileNode := ExtractFile(file)
+			if err != nil {
+				return astpkg.FileNode{
+					Name:    "",
+					File:    nil,
+					Decls:   []astpkg.DeclNode{},
+					Imports: []string{},
+					Deps:    astpkg.NewDependencies(),
+				}
+			}
 
-		// DEBUG: Check if File is preserved
-		if fileNode.File == nil {
-			fmt.Fprintf(os.Stderr, "DEBUG: WARNING - ExtractFile returned nil File for %s\n", path)
-		} else {
-			fmt.Fprintf(os.Stderr, "DEBUG: Successfully extracted %s (decls: %d)\n", path, len(fileNode.Decls))
-			fileNodes = append(fileNodes, fileNode)
-		}
-	}
+			// Pure extraction (no lock needed)
+			return ExtractFile(file)
+		},
+		filePaths,
+		workers,
+	)
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Collected %d valid file nodes\n", len(fileNodes))
+	// Filter valid nodes
+	validNodes := fold.Filter(
+		func(node astpkg.FileNode) bool {
+			return node.File != nil
+		},
+		fileNodes,
+	)
 
-	if len(fileNodes) == 0 {
+	if len(validNodes) == 0 {
 		return astpkg.PackageNode{
 			Name:  "",
 			Files: []astpkg.FileNode{},
@@ -308,21 +293,19 @@ func ExtractDirectoryConcurrent(
 		}, nil
 	}
 
-	// Combine all dependencies
+	// Combine dependencies
 	depMonoid := astpkg.NewDependencyMonoid()
 	allDeps := fold.FoldLeft(
 		func(acc astpkg.Dependencies, node astpkg.FileNode) astpkg.Dependencies {
 			return depMonoid.Combine(acc, node.Deps)
 		},
 		astpkg.NewDependencies(),
-		fileNodes,
+		validNodes,
 	)
 
-	pkgName := fileNodes[0].Name
-
 	return astpkg.PackageNode{
-		Name:  pkgName,
-		Files: fileNodes,
+		Name:  validNodes[0].Name,
+		Files: validNodes,
 		Deps:  allDeps,
 	}, nil
 }

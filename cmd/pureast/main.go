@@ -355,67 +355,6 @@ func handleMultipleSymbols(
 	return outputResult(cfg, code)
 }
 
-// showMethodsFromPackage shows methods for a type
-func showMethodsFromPackage(typeName string, pkgNode astpkg.PackageNode) result.Result[string] {
-	// DEBUG: Check what we have
-	fmt.Fprintf(os.Stderr, "DEBUG: Package name: %s\n", pkgNode.Name)
-	fmt.Fprintf(os.Stderr, "DEBUG: Package has %d files\n", len(pkgNode.Files))
-
-	for i, fileNode := range pkgNode.Files {
-		hasAST := fileNode.File != nil
-		var declCount int
-		if fileNode.File != nil {
-			declCount = len(fileNode.File.Decls)
-		}
-		fmt.Fprintf(os.Stderr, "DEBUG: File %d: name=%s, hasAST=%v, astDecls=%d, nodeDecls=%d\n",
-			i, fileNode.Name, hasAST, declCount, len(fileNode.Decls))
-	}
-
-	// Collect methods from all files using parallel processing
-	methodMonoid := NewMethodNodeMonoid()
-
-	methods := functor.TraverseConcurrent(
-		methodMonoid,
-		func(fileNode astpkg.FileNode) []astpkg.MethodNode {
-			if fileNode.File != nil {
-				extracted := extract.ExtractMethods(typeName, fileNode.File)
-				if len(extracted) > 0 {
-					fmt.Fprintf(os.Stderr, "DEBUG: Extracted %d methods for %s from this file\n", len(extracted), typeName)
-				}
-				return extracted
-			}
-			fmt.Fprintf(os.Stderr, "DEBUG: File has no AST, skipping\n")
-			return []astpkg.MethodNode{}
-		},
-		pkgNode.Files,
-		0,
-	).Value()
-
-	fmt.Fprintf(os.Stderr, "DEBUG: Total methods found: %d\n", len(methods))
-
-	if len(methods) == 0 {
-		msg := fmt.Sprintf("No methods found for type: %s\n", typeName)
-		fmt.Print(msg)
-		return result.Ok(msg)
-	}
-
-	var output strings.Builder
-	output.WriteString(fmt.Sprintf("Methods for %s:\n", typeName))
-	for _, method := range methods {
-		output.WriteString(fmt.Sprintf("  - %s\n", method.MethodName))
-
-		if method.Deps.Types.Size() > 0 {
-			output.WriteString(fmt.Sprintf("    Types: %v\n", method.Deps.Types.ToSlice()))
-		}
-		if method.Deps.Functions.Size() > 0 {
-			output.WriteString(fmt.Sprintf("    Functions: %v\n", method.Deps.Functions.ToSlice()))
-		}
-	}
-
-	fmt.Print(output.String())
-	return result.Ok(output.String())
-}
-
 // MethodNodeMonoid for combining method lists
 type MethodNodeMonoid struct{}
 
@@ -608,4 +547,44 @@ func buildAndSaveIndex(cfg Config, pkgNode astpkg.PackageNode) result.Result[str
 	fmt.Fprintf(os.Stderr, "Indexed %d symbols\n", len(idx.Symbols))
 
 	return result.Ok(msg)
+}
+
+// showMethodsFromPackage shows methods for a type (CLEAN VERSION)
+func showMethodsFromPackage(typeName string, pkgNode astpkg.PackageNode) result.Result[string] {
+	// Collect methods from all files
+	methodMonoid := NewMethodNodeMonoid()
+
+	methods := functor.TraverseConcurrent(
+		methodMonoid,
+		func(fileNode astpkg.FileNode) []astpkg.MethodNode {
+			if fileNode.File != nil {
+				return extract.ExtractMethods(typeName, fileNode.File)
+			}
+			return []astpkg.MethodNode{}
+		},
+		pkgNode.Files,
+		0,
+	).Value()
+
+	if len(methods) == 0 {
+		msg := fmt.Sprintf("No methods found for type: %s\n", typeName)
+		fmt.Print(msg)
+		return result.Ok(msg)
+	}
+
+	var output strings.Builder
+	output.WriteString(fmt.Sprintf("Methods for %s:\n", typeName))
+	for _, method := range methods {
+		output.WriteString(fmt.Sprintf("  - %s\n", method.MethodName))
+
+		if method.Deps.Types.Size() > 0 {
+			output.WriteString(fmt.Sprintf("    Types: %v\n", method.Deps.Types.ToSlice()))
+		}
+		if method.Deps.Functions.Size() > 0 {
+			output.WriteString(fmt.Sprintf("    Functions: %v\n", method.Deps.Functions.ToSlice()))
+		}
+	}
+
+	fmt.Print(output.String())
+	return result.Ok(output.String())
 }
