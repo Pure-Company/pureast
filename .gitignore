@@ -29,3 +29,6 @@ Thumbs.db
 # Output
 /output/
 *.extracted.go
+/pureast-mcp
+/.pureast-index.json
+/my-index.json
