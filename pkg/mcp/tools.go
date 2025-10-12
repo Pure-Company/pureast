@@ -100,7 +100,19 @@ func (te *ToolExecutor) SearchSymbolsHandler() Handler {
 				// Format results
 				text := formatSearchResults(matches)
 
-				return SuccessResponse(req.ID, TextResult(text))
+				// Return CallToolResult format
+				return MCPResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: map[string]interface{}{
+						"content": []map[string]interface{}{
+							{
+								"type": "text",
+								"text": text,
+							},
+						},
+					},
+				}
 			},
 		)
 	}
@@ -158,7 +170,19 @@ func (te *ToolExecutor) ExtractSymbolHandler() Handler {
 					return ErrorResponse(req.ID, InternalError, err.Error())
 				}
 
-				return SuccessResponse(req.ID, TextResult(code))
+				// Return CallToolResult format
+				return MCPResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: map[string]interface{}{
+						"content": []map[string]interface{}{
+							{
+								"type": "text",
+								"text": code,
+							},
+						},
+					},
+				}
 			},
 		)
 	}
@@ -201,7 +225,19 @@ func (te *ToolExecutor) ListSymbolsHandler() Handler {
 				// Format output
 				text := extract.FormatSymbolList(symbols, params.Arguments.GroupByKind)
 
-				return SuccessResponse(req.ID, TextResult(text))
+				// Return CallToolResult format
+				return MCPResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: map[string]interface{}{
+						"content": []map[string]interface{}{
+							{
+								"type": "text",
+								"text": text,
+							},
+						},
+					},
+				}
 			},
 		)
 	}
@@ -261,7 +297,19 @@ func (te *ToolExecutor) ExtractTypesHandler() Handler {
 					return ErrorResponse(req.ID, InternalError, err.Error())
 				}
 
-				return SuccessResponse(req.ID, TextResult(code))
+				// Return CallToolResult format
+				return MCPResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: map[string]interface{}{
+						"content": []map[string]interface{}{
+							{
+								"type": "text",
+								"text": code,
+							},
+						},
+					},
+				}
 			},
 		)
 	}
@@ -308,7 +356,19 @@ func (te *ToolExecutor) ShowDependenciesHandler() Handler {
 				// Format output
 				text := formatDependencies(params.Arguments.Symbol, deps)
 
-				return SuccessResponse(req.ID, TextResult(text))
+				// Return CallToolResult format
+				return MCPResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: map[string]interface{}{
+						"content": []map[string]interface{}{
+							{
+								"type": "text",
+								"text": text,
+							},
+						},
+					},
+				}
 			},
 		)
 	}

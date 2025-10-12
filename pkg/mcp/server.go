@@ -25,6 +25,7 @@ func NewServer(workers int) *Server {
 	// Register tool handlers
 	registry.Register("tools/call", routeToolCall(executor))
 	registry.Register("tools/list", listToolsHandler())
+	registry.Register("prompts/list", listPromptsHandler()) // ADD THIS
 	registry.Register("resources/list", listResourcesHandler())
 	registry.Register("initialize", initializeHandler())
 
@@ -32,44 +33,6 @@ func NewServer(workers int) *Server {
 		registry: registry,
 		executor: executor,
 	}
-}
-
-// Serve starts the server in stdio mode
-func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	scanner := bufio.NewScanner(in)
-	encoder := json.NewEncoder(out)
-
-	// Set max buffer size for large responses
-	const maxScanTokenSize = 1024 * 1024 // 1MB
-	buf := make([]byte, maxScanTokenSize)
-	scanner.Buffer(buf, maxScanTokenSize)
-
-	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			// Parse request
-			var req MCPRequest
-			if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-				// Send parse error
-				resp := ErrorResponse(nil, ParseError, "Parse error: "+err.Error())
-				encoder.Encode(resp)
-				continue
-			}
-
-			// Handle request using concurrent applicative
-			respConcurrent := s.registry.Handle(ctx, req)
-			resp := respConcurrent.Value()
-
-			// Write response
-			if err := encoder.Encode(resp); err != nil {
-				fmt.Fprintf(os.Stderr, "Error encoding response: %v\n", err)
-			}
-		}
-	}
-
-	return scanner.Err()
 }
 
 // routeToolCall routes tool calls to appropriate handlers
@@ -109,6 +72,23 @@ func routeToolCall(executor *ToolExecutor) Handler {
 
 				// Execute handler
 				return handler(ctx, req).Value()
+			},
+		)
+	}
+}
+
+// listPromptsHandler handles prompts/list (ADD THIS FUNCTION)
+func listPromptsHandler() Handler {
+	return func(ctx context.Context, req MCPRequest) functor.Concurrent[MCPResponse] {
+		responseMonoid := NewResponseMonoid()
+
+		return functor.NewConcurrent(
+			responseMonoid,
+			func() MCPResponse {
+				// Return empty prompts list
+				return SuccessResponse(req.ID, map[string]interface{}{
+					"prompts": []interface{}{},
+				})
 			},
 		)
 	}
@@ -283,6 +263,7 @@ func initializeHandler() Handler {
 					"capabilities": map[string]interface{}{
 						"tools":     map[string]interface{}{},
 						"resources": map[string]interface{}{},
+						"prompts":   map[string]interface{}{},
 					},
 					"serverInfo": map[string]interface{}{
 						"name":    "pureast-mcp",
@@ -294,4 +275,50 @@ func initializeHandler() Handler {
 			},
 		)
 	}
+}
+
+// Serve starts the server in stdio mode
+func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
+	scanner := bufio.NewScanner(in)
+	encoder := json.NewEncoder(out)
+
+	// Set max buffer size for large responses
+	const maxScanTokenSize = 1024 * 1024 // 1MB
+	buf := make([]byte, maxScanTokenSize)
+	scanner.Buffer(buf, maxScanTokenSize)
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			// Parse request
+			var req MCPRequest
+			if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+				// Send parse error with id: 0 (not null)
+				resp := ErrorResponse(0, ParseError, "Parse error: "+err.Error())
+				encoder.Encode(resp)
+				continue
+			}
+
+			// Check if this is a notification (no id field or id is nil/null)
+			// Notifications don't get responses
+			if req.ID == nil {
+				// This is a notification - just log it and don't respond
+				fmt.Fprintf(os.Stderr, "Received notification: %s\n", req.Method)
+				continue
+			}
+
+			// Handle request using concurrent applicative
+			respConcurrent := s.registry.Handle(ctx, req)
+			resp := respConcurrent.Value()
+
+			// Write response
+			if err := encoder.Encode(resp); err != nil {
+				fmt.Fprintf(os.Stderr, "Error encoding response: %v\n", err)
+			}
+		}
+	}
+
+	return scanner.Err()
 }
