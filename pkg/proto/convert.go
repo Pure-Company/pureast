@@ -320,16 +320,23 @@ func convertTypeWithContext(expr ast.Expr, declMap map[string]astpkg.DeclNode) r
 			})
 		}
 
-		// Check if it's a known unserializable type (only keep truly common ones)
+		// Check if it's a known unserializable type
 		if isUnserializableType(t.Name) {
-			return result.Err[TypeInfo](errors.New("unserializable type: " + t.Name))
+			return result.Err[TypeInfo](fmt.Errorf("unserializable type: %s", t.Name))
 		}
 
-		// If we have declaration context, check if it's an interface
+		// 🚫 Heuristic safeguard for common interface-like identifiers
+		lower := strings.ToLower(t.Name)
+		if lower == "logger" || lower == "writer" || lower == "reader" || lower == "closer" {
+			return result.Err[TypeInfo](fmt.Errorf("interface-like type: %s", t.Name))
+		}
+
+		// If we have declaration context, check if it's an interface type declared in this package
 		if declMap != nil {
 			if decl, ok := declMap[t.Name]; ok {
 				if isInterfaceDecl(decl) {
-					return result.Err[TypeInfo](errors.New("interface type: " + t.Name))
+					// 🚫 Skip any fields that reference a locally-declared interface
+					return result.Err[TypeInfo](fmt.Errorf("interface type: %s", t.Name))
 				}
 			}
 		}
@@ -372,14 +379,20 @@ func convertTypeWithContext(expr ast.Expr, declMap map[string]astpkg.DeclNode) r
 		value := valueResult.Unwrap()
 
 		return result.Ok(TypeInfo{
-			ProtoType:   "map<" + key.ProtoType + ", " + value.ProtoType + ">",
+			ProtoType:   fmt.Sprintf("map<%s, %s>", key.ProtoType, value.ProtoType),
 			Repeated:    false,
 			NeedsImport: "",
 		})
 
 	case *ast.SelectorExpr:
-		// Qualified types (e.g., time.Time)
+		// Qualified types (e.g., time.Time, log.Logger)
 		if ident, ok := t.X.(*ast.Ident); ok {
+			// 🚫 Skip known qualified interface-like or unserializable types
+			if (ident.Name == "log" && t.Sel.Name == "Logger") ||
+				(ident.Name == "zap" && t.Sel.Name == "Logger") ||
+				(ident.Name == "io" && (t.Sel.Name == "Writer" || t.Sel.Name == "Reader" || t.Sel.Name == "Closer")) {
+				return result.Err[TypeInfo](fmt.Errorf("unserializable qualified type: %s.%s", ident.Name, t.Sel.Name))
+			}
 			return mapQualifiedType(ident.Name, t.Sel.Name)
 		}
 		return result.Err[TypeInfo](errors.New("unknown qualified type"))
@@ -409,28 +422,21 @@ func isInterfaceDecl(decl astpkg.DeclNode) bool {
 	}
 
 	for _, spec := range genDecl.Specs {
-		typeSpec, ok := spec.(*ast.TypeSpec)
-		if !ok {
-			continue
+		if typeSpec, ok := spec.(*ast.TypeSpec); ok {
+			if _, isIface := typeSpec.Type.(*ast.InterfaceType); isIface {
+				return true
+			}
 		}
-
-		// Check if it's an interface type
-		_, isInterface := typeSpec.Type.(*ast.InterfaceType)
-		return isInterface
 	}
 
 	return false
 }
 
-// isUnserializableType checks only truly fundamental unserializable types (pure!)
 func isUnserializableType(typeName string) bool {
-	// Only keep the most fundamental unserializable types
-	// Everything else will be detected via AST analysis
 	unserializable := map[string]bool{
-		// Context (special case - stdlib interface)
-		"Context": true,
-
-		// Sync primitives (have internal state)
+		// Core interfaces / sync primitives
+		"Context":   true,
+		"error":     true,
 		"Mutex":     true,
 		"RWMutex":   true,
 		"WaitGroup": true,
@@ -438,8 +444,16 @@ func isUnserializableType(typeName string) bool {
 		"Once":      true,
 		"Pool":      true,
 
-		// Error interface
-		"error": true,
+		// Common logging interfaces
+		"Logger":     true,
+		"log.Logger": true,
+
+		// Other unmarshalable I/O types
+		"Reader":      true,
+		"Writer":      true,
+		"Closer":      true,
+		"ReadCloser":  true,
+		"WriteCloser": true,
 	}
 
 	return unserializable[typeName]
@@ -454,6 +468,16 @@ func ConvertStructToMessageWithPackage(
 	genDecl, ok := decl.Decl.(*ast.GenDecl)
 	if !ok {
 		return result.Err[ProtoMessage](ErrNotAStruct)
+	}
+
+	// 🚫 Skip if this declaration defines an interface
+	for _, spec := range genDecl.Specs {
+		if typeSpec, ok := spec.(*ast.TypeSpec); ok {
+			if _, isIface := typeSpec.Type.(*ast.InterfaceType); isIface {
+				// Simply skip interface declarations — not serializable in proto
+				return result.Err[ProtoMessage](ErrNotAStruct)
+			}
+		}
 	}
 
 	for _, spec := range genDecl.Specs {

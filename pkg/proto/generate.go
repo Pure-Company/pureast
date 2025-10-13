@@ -75,7 +75,7 @@ func FormatProtoFile(pf ProtoFile) string {
 	if len(pf.Messages) > 0 {
 		parts = append(parts, "")
 		for _, msg := range pf.Messages {
-			parts = append(parts, formatMessage(msg))
+			parts = append(parts, "\n"+formatMessage(msg)) // 👈 add leading newline
 			parts = append(parts, "")
 		}
 	}
