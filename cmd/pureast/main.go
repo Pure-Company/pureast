@@ -13,6 +13,7 @@ import (
 	"github.com/vinodhalaharvi/pureast/pkg/codegen"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
 	"github.com/vinodhalaharvi/pureast/pkg/index"
+	"github.com/vinodhalaharvi/pureast/pkg/proto" // NEW: Added proto import
 	"github.com/vinodhalaharvi/purekernels/pkg/functor"
 	"github.com/vinodhalaharvi/purekernels/pkg/result"
 )
@@ -61,10 +62,12 @@ type Config struct {
 	TypesSummary   bool
 	ListSymbols    bool
 	GroupByKind    bool
-	FuzzySearch    bool   // NEW: Fuzzy search mode
-	SearchPattern  string // NEW: Search pattern for fuzzy search
-	BuildIndex     bool   // NEW: Build and cache index
-	IndexPath      string // NEW: Path to index file
+	FuzzySearch    bool
+	SearchPattern  string
+	BuildIndex     bool
+	IndexPath      string
+	GenerateProto  bool
+	ProtoTypes     string
 }
 
 // parseFlags parses command line flags and returns Result[Config]
@@ -93,6 +96,9 @@ func parseFlags() result.Result[Config] {
 	flag.BoolVar(&cfg.BuildIndex, "index", false, "Build and save search index")
 	flag.StringVar(&cfg.IndexPath, "index-path", ".pureast-index.json", "Path to index file")
 
+	flag.BoolVar(&cfg.GenerateProto, "generate-proto", false, "Generate protobuf schema")
+	flag.StringVar(&cfg.ProtoTypes, "proto-types", "", "Comma-separated list of types to include in proto (empty = all)")
+
 	flag.Parse()
 
 	// Validate configuration
@@ -108,7 +114,8 @@ func validateConfig(cfg Config) result.Result[Config] {
 
 	// Symbol required for certain modes
 	requiresSymbol := !cfg.AllTypes && !cfg.StructsOnly && !cfg.InterfacesOnly &&
-		!cfg.TypesSummary && !cfg.ListSymbols && !cfg.FuzzySearch && !cfg.BuildIndex
+		!cfg.TypesSummary && !cfg.ListSymbols && !cfg.FuzzySearch &&
+		!cfg.BuildIndex && !cfg.GenerateProto
 
 	if requiresSymbol && cfg.Symbol == "" {
 		return result.Err[Config](fmt.Errorf("-symbol required for this operation"))
@@ -137,6 +144,10 @@ func run(cfg Config) result.Result[string] {
 		return buildAndSaveIndex(cfg, pkgNode)
 	}
 
+	if cfg.GenerateProto {
+		return handleProtoGeneration(cfg, pkgNode)
+	}
+
 	// Fuzzy search mode
 	if cfg.FuzzySearch {
 		return fuzzySearchMode(cfg, pkgNode)
@@ -154,6 +165,34 @@ func run(cfg Config) result.Result[string] {
 
 	// Symbol extraction modes
 	return handleSymbolExtraction(cfg, pkgNode)
+}
+
+func handleProtoGeneration(cfg Config, pkgNode astpkg.PackageNode) result.Result[string] {
+	fmt.Fprintf(os.Stderr, "Generating protobuf schema...\n")
+
+	// Parse type filter
+	var typeFilter []string
+	if cfg.ProtoTypes != "" {
+		typeFilter = strings.Split(cfg.ProtoTypes, ",")
+		// Trim whitespace
+		for i := range typeFilter {
+			typeFilter[i] = strings.TrimSpace(typeFilter[i])
+		}
+		fmt.Fprintf(os.Stderr, "Filtering types: %v\n", typeFilter)
+	}
+
+	// Generate proto concurrently using applicative kernels!
+	protoFile := proto.GenerateProtoFromPackageConcurrent(
+		pkgNode,
+		typeFilter,
+		cfg.Workers,
+	).Value()
+
+	// Format as string
+	protoCode := proto.FormatProtoFile(protoFile)
+
+	// Output
+	return outputResult(cfg, protoCode)
 }
 
 // loadPackage loads the package from file or directory
@@ -496,8 +535,6 @@ func isRegexPattern(s string) bool {
 	return false
 }
 
-// In main.go
-
 // fuzzySearchMode performs fuzzy search using the index
 func fuzzySearchMode(cfg Config, pkgNode astpkg.PackageNode) result.Result[string] {
 	fmt.Fprintf(os.Stderr, "Fuzzy searching for: %s\n", cfg.SearchPattern)
@@ -549,7 +586,7 @@ func buildAndSaveIndex(cfg Config, pkgNode astpkg.PackageNode) result.Result[str
 	return result.Ok(msg)
 }
 
-// showMethodsFromPackage shows methods for a type (CLEAN VERSION)
+// showMethodsFromPackage shows methods for a type
 func showMethodsFromPackage(typeName string, pkgNode astpkg.PackageNode) result.Result[string] {
 	// Collect methods from all files
 	methodMonoid := NewMethodNodeMonoid()
