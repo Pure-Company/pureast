@@ -170,70 +170,6 @@ func formatEnum(enum ProtoEnum) string {
 	return strings.Join(lines, "\n")
 }
 
-// generateProtoFromFile generates proto from single file (pure!)
-// This is used when conflict detection across files isn't needed
-func generateProtoFromFile(
-	fileNode astpkg.FileNode,
-	typeFilter []string,
-) ProtoFile {
-	// For single file, no cross-file conflicts possible
-	// Just use empty conflict map
-	return generateProtoFromFileWithConflictDetection(
-		fileNode,
-		typeFilter,
-		make(map[string][]string), // No conflicts
-	)
-}
-
-// generateProtoFromFileWithConflictDetection generates proto with duplicate detection
-func generateProtoFromFileWithConflictDetection(
-	fileNode astpkg.FileNode,
-	typeFilter []string,
-	typeSources map[string][]string,
-) ProtoFile {
-	// Filter declarations if needed
-	decls := fileNode.Decls
-	if len(typeFilter) > 0 {
-		decls = fold.Filter(
-			func(decl astpkg.DeclNode) bool {
-				return matchesFilter(decl.Name, typeFilter)
-			},
-			decls,
-		)
-	}
-
-	// Convert with package prefix if there are conflicts
-	messages := fold.FoldLeft(
-		func(acc []ProtoMessage, decl astpkg.DeclNode) []ProtoMessage {
-			// Check if this type name appears in multiple files
-			pkgPrefix := ""
-			if sources := typeSources[decl.Name]; len(sources) > 1 {
-				// Conflict detected - use file name as prefix
-				pkgPrefix = fileNode.Name
-			}
-
-			msgResult := ConvertStructToMessageWithPackage(decl, pkgPrefix)
-			if msgResult.IsOk() {
-				return append(acc, msgResult.Unwrap())
-			}
-			return acc
-		},
-		[]ProtoMessage{},
-		decls,
-	)
-
-	// Collect needed imports
-	imports := collectImports(messages)
-
-	return ProtoFile{
-		Syntax:   "proto3",
-		Package:  fileNode.Name + ".v1",
-		Imports:  imports,
-		Messages: messages,
-		Enums:    []ProtoEnum{},
-	}
-}
-
 // GenerateProtoFromPackage generates .proto from package (pure using fold!)
 func GenerateProtoFromPackage(
 	pkgNode astpkg.PackageNode,
@@ -251,6 +187,15 @@ func GenerateProtoFromPackage(
 		Imports:  []string{},
 		Messages: []ProtoMessage{},
 		Enums:    []ProtoEnum{},
+	}
+
+	// Build PACKAGE-LEVEL declaration map for interface detection
+	// This must include ALL declarations from ALL files
+	declMap := make(map[string]astpkg.DeclNode)
+	for _, fileNode := range pkgNode.Files {
+		for _, decl := range fileNode.Decls {
+			declMap[decl.Name] = decl
+		}
 	}
 
 	// First pass: detect duplicate type names across files
@@ -275,6 +220,7 @@ func GenerateProtoFromPackage(
 				fileNode,
 				typeFilter,
 				typeSources,
+				declMap, // Pass the PACKAGE-LEVEL declMap
 			)
 			return protoMonoid.Combine(acc, fileProto)
 		},
@@ -283,4 +229,75 @@ func GenerateProtoFromPackage(
 	)
 
 	return result
+}
+
+// generateProtoFromFileWithConflictDetection generates proto with duplicate detection
+func generateProtoFromFileWithConflictDetection(
+	fileNode astpkg.FileNode,
+	typeFilter []string,
+	typeSources map[string][]string,
+	declMap map[string]astpkg.DeclNode, // Now passed in from package level
+) ProtoFile {
+	// Filter declarations if needed
+	decls := fileNode.Decls
+	if len(typeFilter) > 0 {
+		decls = fold.Filter(
+			func(decl astpkg.DeclNode) bool {
+				return matchesFilter(decl.Name, typeFilter)
+			},
+			decls,
+		)
+	}
+
+	// Convert with package prefix if there are conflicts
+	messages := fold.FoldLeft(
+		func(acc []ProtoMessage, decl astpkg.DeclNode) []ProtoMessage {
+			// Check if this type name appears in multiple files
+			pkgPrefix := ""
+			if sources := typeSources[decl.Name]; len(sources) > 1 {
+				// Conflict detected - use file name as prefix
+				pkgPrefix = fileNode.Name
+			}
+
+			msgResult := ConvertStructToMessageWithPackage(decl, pkgPrefix, declMap)
+			if msgResult.IsOk() {
+				return append(acc, msgResult.Unwrap())
+			}
+			return acc
+		},
+		[]ProtoMessage{},
+		decls,
+	)
+
+	// Collect needed imports
+	imports := collectImports(messages)
+
+	return ProtoFile{
+		Syntax:   "proto3",
+		Package:  fileNode.Name + ".v1",
+		Imports:  imports,
+		Messages: messages,
+		Enums:    []ProtoEnum{},
+	}
+}
+
+// generateProtoFromFile generates proto from single file (pure!)
+// This is used when conflict detection across files isn't needed
+func generateProtoFromFile(
+	fileNode astpkg.FileNode,
+	typeFilter []string,
+) ProtoFile {
+	// For single file, build declMap from just this file
+	declMap := make(map[string]astpkg.DeclNode)
+	for _, decl := range fileNode.Decls {
+		declMap[decl.Name] = decl
+	}
+
+	// Use empty conflict map since single file has no cross-file conflicts
+	return generateProtoFromFileWithConflictDetection(
+		fileNode,
+		typeFilter,
+		make(map[string][]string),
+		declMap,
+	)
 }

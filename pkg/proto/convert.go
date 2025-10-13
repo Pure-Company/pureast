@@ -15,41 +15,6 @@ import (
 
 // convertFieldToProtoFields converts a single Go field to proto fields (pure!)
 // Returns empty slice for unsupported types
-func convertFieldToProtoFields(field *ast.Field) []result.Result[ProtoField] {
-	// Skip embedded fields
-	if len(field.Names) == 0 {
-		return []result.Result[ProtoField]{}
-	}
-
-	name := field.Names[0].Name
-
-	// Skip unexported fields
-	if !ast.IsExported(name) {
-		return []result.Result[ProtoField]{}
-	}
-
-	// Convert type - returns Result
-	typeResult := convertType(field.Type)
-
-	if !typeResult.IsOk() {
-		// Unsupported type - return empty (pure way to skip)
-		return []result.Result[ProtoField]{}
-	}
-
-	typeInfo := typeResult.Unwrap()
-
-	// Create proto field (number will be assigned later)
-	protoField := ProtoField{
-		Name:     toSnakeCase(name),
-		Type:     typeInfo.ProtoType,
-		Number:   0, // Will be renumbered
-		Repeated: typeInfo.Repeated,
-		Comment:  extractComment(field.Doc),
-	}
-
-	return []result.Result[ProtoField]{result.Ok(protoField)}
-}
-
 // filterAndRenumberFields filters successful results and assigns field numbers (pure!)
 func filterAndRenumberFields(results []result.Result[ProtoField]) []ProtoField {
 	// Filter only successful results
@@ -217,131 +182,6 @@ var (
 	ErrNotAnEnum  = errors.New("declaration is not an enum")
 )
 
-// convertType converts Go type to proto type info (pure!)
-// Returns Result[TypeInfo] - Err for unsupported types
-func convertType(expr ast.Expr) result.Result[TypeInfo] {
-	switch t := expr.(type) {
-	case *ast.Ident:
-		// Check if it's a known interface/unserializable type FIRST
-		if isUnserializableType(t.Name) {
-			return result.Err[TypeInfo](errors.New("unserializable type: " + t.Name))
-		}
-
-		protoType := mapBasicType(t.Name)
-		if protoType == "" {
-			return result.Err[TypeInfo](errors.New("unsupported basic type: " + t.Name))
-		}
-		return result.Ok(TypeInfo{
-			ProtoType:   protoType,
-			Repeated:    false,
-			NeedsImport: "",
-		})
-
-	case *ast.StarExpr:
-		// Pointer types - proto3 doesn't have explicit optional
-		return convertType(t.X)
-
-	case *ast.ArrayType:
-		// Arrays/slices become repeated
-		innerResult := convertType(t.Elt)
-		if !innerResult.IsOk() {
-			return result.Err[TypeInfo](errors.New("unsupported array element type"))
-		}
-
-		inner := innerResult.Unwrap()
-		return result.Ok(TypeInfo{
-			ProtoType:   inner.ProtoType,
-			Repeated:    true,
-			NeedsImport: inner.NeedsImport,
-		})
-
-	case *ast.MapType:
-		// Map types
-		keyResult := convertType(t.Key)
-		valueResult := convertType(t.Value)
-
-		if !keyResult.IsOk() || !valueResult.IsOk() {
-			return result.Err[TypeInfo](errors.New("unsupported map key or value type"))
-		}
-
-		key := keyResult.Unwrap()
-		value := valueResult.Unwrap()
-
-		return result.Ok(TypeInfo{
-			ProtoType:   "map<" + key.ProtoType + ", " + value.ProtoType + ">",
-			Repeated:    false,
-			NeedsImport: "",
-		})
-
-	case *ast.SelectorExpr:
-		// Qualified types (e.g., time.Time)
-		if ident, ok := t.X.(*ast.Ident); ok {
-			return mapQualifiedType(ident.Name, t.Sel.Name)
-		}
-		return result.Err[TypeInfo](errors.New("unknown qualified type"))
-
-	case *ast.InterfaceType:
-		// Interfaces can't be serialized - SKIP
-		return result.Err[TypeInfo](errors.New("interfaces cannot be serialized"))
-
-	case *ast.FuncType:
-		// Functions can't be serialized - SKIP
-		return result.Err[TypeInfo](errors.New("functions cannot be serialized"))
-
-	case *ast.ChanType:
-		// Channels can't be serialized - SKIP
-		return result.Err[TypeInfo](errors.New("channels cannot be serialized"))
-
-	default:
-		return result.Err[TypeInfo](errors.New("unknown type"))
-	}
-}
-
-// isUnserializableType checks if a type name is unserializable (pure!)
-func isUnserializableType(typeName string) bool {
-	unserializable := map[string]bool{
-		// Interfaces
-		"Handler":        true,
-		"RoundTripper":   true,
-		"ResponseWriter": true,
-		"Flusher":        true,
-		"Hijacker":       true,
-		"Pusher":         true,
-		"CloseNotifier":  true,
-		"Reader":         true,
-		"Writer":         true,
-		"ReadWriter":     true,
-		"ReadCloser":     true,
-		"WriteCloser":    true,
-		"Closer":         true,
-		"Listener":       true,
-		"Conn":           true,
-		"PacketConn":     true,
-		"Logger":         true, // ADD THIS - log.Logger interface
-		"File":           true, // ADD THIS - os.File (has fd)
-		"FileSystem":     true, // ADD THIS - fs.FileSystem interface
-
-		// Functions/callbacks
-		"HandlerFunc": true,
-
-		// Context
-		"Context": true,
-
-		// Sync primitives
-		"Mutex":     true,
-		"RWMutex":   true,
-		"WaitGroup": true,
-		"Cond":      true,
-		"Once":      true,
-		"Pool":      true,
-
-		// Other unserializable
-		"error": true,
-	}
-
-	return unserializable[typeName]
-}
-
 // mapBasicType maps Go primitives to proto types (pure!)
 // Returns empty string for unsupported types
 func mapBasicType(goType string) string {
@@ -409,12 +249,208 @@ func toSnakeCase(s string) string {
 }
 
 // ConvertStructToMessage converts Go struct to proto message (pure!)
+// ConvertStructToMessage converts Go struct to proto message (pure!)
+// Note: Without declMap, interface types will be treated as custom messages
 func ConvertStructToMessage(decl astpkg.DeclNode) result.Result[ProtoMessage] {
-	return ConvertStructToMessageWithPackage(decl, "")
+	return ConvertStructToMessageWithPackage(decl, "", nil)
+}
+
+// ConvertStructToMessageWithDeclMap converts with interface detection support
+func ConvertStructToMessageWithDeclMap(
+	decl astpkg.DeclNode,
+	declMap map[string]astpkg.DeclNode,
+) result.Result[ProtoMessage] {
+	return ConvertStructToMessageWithPackage(decl, "", declMap)
+}
+
+// convertFieldToProtoFields converts a single Go field to proto fields (pure!)
+// Returns empty slice for unsupported types
+func convertFieldToProtoFields(field *ast.Field) []result.Result[ProtoField] {
+	// Skip embedded fields
+	if len(field.Names) == 0 {
+		return []result.Result[ProtoField]{}
+	}
+
+	name := field.Names[0].Name
+
+	// Skip unexported fields
+	if !ast.IsExported(name) {
+		return []result.Result[ProtoField]{}
+	}
+
+	// Convert type - returns Result
+	typeResult := convertType(field.Type)
+
+	if !typeResult.IsOk() {
+		// Unsupported type - return empty (pure way to skip)
+		return []result.Result[ProtoField]{}
+	}
+
+	typeInfo := typeResult.Unwrap()
+
+	// Create proto field (number will be assigned later)
+	protoField := ProtoField{
+		Name:     toSnakeCase(name),
+		Type:     typeInfo.ProtoType,
+		Number:   0, // Will be renumbered
+		Repeated: typeInfo.Repeated,
+		Comment:  extractComment(field.Doc),
+	}
+
+	return []result.Result[ProtoField]{result.Ok(protoField)}
+}
+
+// convertType converts Go type to proto type info (pure!)
+// Returns Result[TypeInfo] - Err for unsupported types
+func convertType(expr ast.Expr) result.Result[TypeInfo] {
+	return convertTypeWithContext(expr, nil)
+}
+
+// convertTypeWithContext converts Go type with access to declaration context (pure!)
+func convertTypeWithContext(expr ast.Expr, declMap map[string]astpkg.DeclNode) result.Result[TypeInfo] {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		// Check if it's a basic type first
+		protoType := mapBasicType(t.Name)
+		if protoType != "" {
+			return result.Ok(TypeInfo{
+				ProtoType:   protoType,
+				Repeated:    false,
+				NeedsImport: "",
+			})
+		}
+
+		// Check if it's a known unserializable type (only keep truly common ones)
+		if isUnserializableType(t.Name) {
+			return result.Err[TypeInfo](errors.New("unserializable type: " + t.Name))
+		}
+
+		// If we have declaration context, check if it's an interface
+		if declMap != nil {
+			if decl, ok := declMap[t.Name]; ok {
+				if isInterfaceDecl(decl) {
+					return result.Err[TypeInfo](errors.New("interface type: " + t.Name))
+				}
+			}
+		}
+
+		// Otherwise, assume it's a custom message type
+		return result.Ok(TypeInfo{
+			ProtoType:   t.Name,
+			Repeated:    false,
+			NeedsImport: "",
+		})
+
+	case *ast.StarExpr:
+		// Pointer types - proto3 doesn't have explicit optional
+		return convertTypeWithContext(t.X, declMap)
+
+	case *ast.ArrayType:
+		// Arrays/slices become repeated
+		innerResult := convertTypeWithContext(t.Elt, declMap)
+		if !innerResult.IsOk() {
+			return result.Err[TypeInfo](errors.New("unsupported array element type"))
+		}
+
+		inner := innerResult.Unwrap()
+		return result.Ok(TypeInfo{
+			ProtoType:   inner.ProtoType,
+			Repeated:    true,
+			NeedsImport: inner.NeedsImport,
+		})
+
+	case *ast.MapType:
+		// Map types
+		keyResult := convertTypeWithContext(t.Key, declMap)
+		valueResult := convertTypeWithContext(t.Value, declMap)
+
+		if !keyResult.IsOk() || !valueResult.IsOk() {
+			return result.Err[TypeInfo](errors.New("unsupported map key or value type"))
+		}
+
+		key := keyResult.Unwrap()
+		value := valueResult.Unwrap()
+
+		return result.Ok(TypeInfo{
+			ProtoType:   "map<" + key.ProtoType + ", " + value.ProtoType + ">",
+			Repeated:    false,
+			NeedsImport: "",
+		})
+
+	case *ast.SelectorExpr:
+		// Qualified types (e.g., time.Time)
+		if ident, ok := t.X.(*ast.Ident); ok {
+			return mapQualifiedType(ident.Name, t.Sel.Name)
+		}
+		return result.Err[TypeInfo](errors.New("unknown qualified type"))
+
+	case *ast.InterfaceType:
+		// Inline interface definition - can't be serialized
+		return result.Err[TypeInfo](errors.New("inline interface cannot be serialized"))
+
+	case *ast.FuncType:
+		// Functions can't be serialized
+		return result.Err[TypeInfo](errors.New("functions cannot be serialized"))
+
+	case *ast.ChanType:
+		// Channels can't be serialized
+		return result.Err[TypeInfo](errors.New("channels cannot be serialized"))
+
+	default:
+		return result.Err[TypeInfo](errors.New("unknown type"))
+	}
+}
+
+// isInterfaceDecl checks if a declaration is an interface (pure!)
+func isInterfaceDecl(decl astpkg.DeclNode) bool {
+	genDecl, ok := decl.Decl.(*ast.GenDecl)
+	if !ok {
+		return false
+	}
+
+	for _, spec := range genDecl.Specs {
+		typeSpec, ok := spec.(*ast.TypeSpec)
+		if !ok {
+			continue
+		}
+
+		// Check if it's an interface type
+		_, isInterface := typeSpec.Type.(*ast.InterfaceType)
+		return isInterface
+	}
+
+	return false
+}
+
+// isUnserializableType checks only truly fundamental unserializable types (pure!)
+func isUnserializableType(typeName string) bool {
+	// Only keep the most fundamental unserializable types
+	// Everything else will be detected via AST analysis
+	unserializable := map[string]bool{
+		// Context (special case - stdlib interface)
+		"Context": true,
+
+		// Sync primitives (have internal state)
+		"Mutex":     true,
+		"RWMutex":   true,
+		"WaitGroup": true,
+		"Cond":      true,
+		"Once":      true,
+		"Pool":      true,
+
+		// Error interface
+		"error": true,
+	}
+
+	return unserializable[typeName]
 }
 
 // ConvertStructToMessageWithPackage converts Go struct to proto message with package context (pure!)
-func ConvertStructToMessageWithPackage(decl astpkg.DeclNode, pkgName string) result.Result[ProtoMessage] {
+func ConvertStructToMessageWithPackage(
+	decl astpkg.DeclNode,
+	pkgName string,
+	declMap map[string]astpkg.DeclNode,
+) result.Result[ProtoMessage] {
 	genDecl, ok := decl.Decl.(*ast.GenDecl)
 	if !ok {
 		return result.Err[ProtoMessage](ErrNotAStruct)
@@ -434,7 +470,7 @@ func ConvertStructToMessageWithPackage(decl astpkg.DeclNode, pkgName string) res
 		// Convert fields using fold (categorical!)
 		fieldResults := fold.Map(
 			func(field *ast.Field) []result.Result[ProtoField] {
-				return convertFieldToProtoFields(field)
+				return convertFieldToProtoFieldsWithContext(field, declMap)
 			},
 			structType.Fields.List,
 		)
@@ -454,7 +490,6 @@ func ConvertStructToMessageWithPackage(decl astpkg.DeclNode, pkgName string) res
 		// Create message name with optional package prefix
 		messageName := typeSpec.Name.Name
 		if pkgName != "" && pkgName != "main" {
-			// Only add prefix if there might be conflicts
 			messageName = pkgName + "_" + messageName
 		}
 
@@ -466,4 +501,43 @@ func ConvertStructToMessageWithPackage(decl astpkg.DeclNode, pkgName string) res
 	}
 
 	return result.Err[ProtoMessage](ErrNotAStruct)
+}
+
+// convertFieldToProtoFieldsWithContext converts field with declaration context
+func convertFieldToProtoFieldsWithContext(
+	field *ast.Field,
+	declMap map[string]astpkg.DeclNode,
+) []result.Result[ProtoField] {
+	// Skip embedded fields
+	if len(field.Names) == 0 {
+		return []result.Result[ProtoField]{}
+	}
+
+	name := field.Names[0].Name
+
+	// Skip unexported fields
+	if !ast.IsExported(name) {
+		return []result.Result[ProtoField]{}
+	}
+
+	// Convert type with context - returns Result
+	typeResult := convertTypeWithContext(field.Type, declMap)
+
+	if !typeResult.IsOk() {
+		// Unsupported type - return empty (pure way to skip)
+		return []result.Result[ProtoField]{}
+	}
+
+	typeInfo := typeResult.Unwrap()
+
+	// Create proto field (number will be assigned later)
+	protoField := ProtoField{
+		Name:     toSnakeCase(name),
+		Type:     typeInfo.ProtoType,
+		Number:   0, // Will be renumbered
+		Repeated: typeInfo.Repeated,
+		Comment:  extractComment(field.Doc),
+	}
+
+	return []result.Result[ProtoField]{result.Ok(protoField)}
 }
