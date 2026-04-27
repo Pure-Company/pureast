@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/vinodhalaharvi/purekernels/pkg/functor"
+	"github.com/Pure-Company/purekernels/pkg/functor"
 )
 
 // Server is the MCP server

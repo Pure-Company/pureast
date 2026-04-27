@@ -22,7 +22,7 @@ package analyze
 
 import (
 	astpkg "github.com/Pure-Company/pureast/pkg/ast"
-	"github.com/vinodhalaharvi/purekernels/pkg/monoid"
+	"github.com/Pure-Company/purekernels/pkg/monoid"
 )
 
 // reverseEdges returns the inverted adjacency relation: for each

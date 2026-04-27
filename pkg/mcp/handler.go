@@ -3,8 +3,8 @@ package mcp
 import (
 	"context"
 
-	"github.com/vinodhalaharvi/purekernels/pkg/functor"
-	"github.com/vinodhalaharvi/purekernels/pkg/result"
+	"github.com/Pure-Company/purekernels/pkg/functor"
+	"github.com/Pure-Company/purekernels/pkg/result"
 )
 
 // Handler processes an MCP request using Concurrent applicative

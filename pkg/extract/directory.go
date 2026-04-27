@@ -10,9 +10,9 @@ import (
 	"sync"
 
 	astpkg "github.com/Pure-Company/pureast/pkg/ast"
-	"github.com/vinodhalaharvi/purekernels/pkg/fold"
-	"github.com/vinodhalaharvi/purekernels/pkg/functor"
-	"github.com/vinodhalaharvi/purekernels/pkg/monoid"
+	"github.com/Pure-Company/purekernels/pkg/fold"
+	"github.com/Pure-Company/purekernels/pkg/functor"
+	"github.com/Pure-Company/purekernels/pkg/monoid"
 )
 
 // FileDiscovery finds all Go files in a directory tree

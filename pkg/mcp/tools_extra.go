@@ -28,7 +28,7 @@ import (
 	"github.com/Pure-Company/pureast/pkg/analyze"
 	astpkg "github.com/Pure-Company/pureast/pkg/ast"
 	"github.com/Pure-Company/pureast/pkg/extract"
-	"github.com/vinodhalaharvi/purekernels/pkg/functor"
+	"github.com/Pure-Company/purekernels/pkg/functor"
 )
 
 // DumpPackageHandler emits a compact, signatures-mostly view of every

@@ -4,8 +4,8 @@ import (
 	"go/format"
 	"strings"
 
-	"github.com/vinodhalaharvi/purekernels/pkg/fold"
-	"github.com/vinodhalaharvi/purekernels/pkg/monoid"
+	"github.com/Pure-Company/purekernels/pkg/fold"
+	"github.com/Pure-Company/purekernels/pkg/monoid"
 )
 
 // FormatCode formats Go source code (pure function)

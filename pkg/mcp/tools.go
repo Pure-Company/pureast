@@ -11,9 +11,9 @@ import (
 	astpkg "github.com/Pure-Company/pureast/pkg/ast"
 	"github.com/Pure-Company/pureast/pkg/codegen"
 	"github.com/Pure-Company/pureast/pkg/extract"
-	"github.com/vinodhalaharvi/purekernels/pkg/functor"
-	"github.com/vinodhalaharvi/purekernels/pkg/monoid"
-	"github.com/vinodhalaharvi/purekernels/pkg/result"
+	"github.com/Pure-Company/purekernels/pkg/functor"
+	"github.com/Pure-Company/purekernels/pkg/monoid"
+	"github.com/Pure-Company/purekernels/pkg/result"
 )
 
 // ToolExecutor executes pureast tools using applicative kernels
