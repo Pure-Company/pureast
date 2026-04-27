@@ -70,7 +70,7 @@ pureast types ./examples/app                # [deprecated] use 'dump --kind' ins
 | --------- | -------------------------------------------------------------- |
 | `dump`    | Compact dump of every symbol — the LLM-context flagship.       |
 | `extract` | Extract one symbol plus its transitive dependencies.           |
-| `deps`    | Analyze what a symbol depends on (`--format text\|dot\|json`). |
+| `deps`    | Forward or reverse dependency analysis (`--reverse`, `--locations`).|
 | `diff`    | Symbols whose lines changed since a git ref (PR-review use).   |
 | `search`  | Fuzzy search for symbols by name pattern.                      |
 | `list`    | Enumerate all symbols in a package, optionally grouped.        |
@@ -89,7 +89,13 @@ pureast dump ./examples/app -o context.txt           # signatures only
 pureast dump ./examples/app --bodies -o full.txt     # include implementations
 pureast dump ./examples/app --kind interface         # only interfaces
 pureast dump ./examples/app --exported               # only exported symbols
+pureast dump ./examples/app --max-tokens 4000        # fit a token budget
 ```
+
+`--max-tokens` is symbol-aware: it drops trailing whole declarations
+rather than slicing through one, so the output is always syntactically
+complete Go (matters when the LLM re-parses it). Available on `dump`,
+`extract`, and `diff`.
 
 ### 🧱 Extract a symbol with its dependencies
 
@@ -100,17 +106,58 @@ pureast extract Profile ./examples/app --minimal     # direct deps only
 
 ### 🧾 Dependency analysis
 
+Forward (what does X depend on):
+
 ```bash
 pureast deps Profile ./examples/app                  # text report (default)
+pureast deps Profile ./examples/app --depth 1        # one-hop only
+pureast deps Profile ./examples/app --locations      # show file:line on each entry
 pureast deps Profile ./examples/app --format dot > graph.dot
 dot -Tpng graph.dot -o graph.png
 ```
+
+Reverse (who depends on X — impact analysis before a refactor):
+
+```bash
+pureast deps User ./examples/app --reverse           # every caller, with file:line
+pureast deps User ./examples/app --reverse --depth 1 # direct callers only
+pureast deps User ./examples/app --reverse --format json
+```
+
+`--reverse` always emits file:line locations (jump-to-source is the
+point); for forward queries `--locations` is opt-in. JSON output is
+deterministic — alphabetically sorted, fixed field order — so it
+caches well in LLM prompts.
+
+Errors go to stderr; successful output goes to stdout. Pipes stay
+clean: `pureast deps Foo ./pkg --format json | jq .` either parses
+or prints nothing on failure, never both.
+
+### 🔀 PR review with `diff`
+
+`diff` extracts only the symbols whose lines actually changed since
+a git ref — useful for feeding an LLM the relevant context for a
+code review without paying for the rest of the repo.
+
+```bash
+pureast diff main                                    # changes in current dir
+pureast diff main ./examples/app                     # scoped to a path
+pureast diff HEAD~5 --bodies                         # include implementations
+pureast diff origin/main --format md -o pr.md        # markdown for context windows
+pureast diff main --max-tokens 8000                  # fit a budget
+```
+
+Filtering is hunk-level by default (only symbols whose line range
+intersects a changed hunk). Use `--whole-file` if you want every
+symbol from any modified file — heavier output, useful when the
+diff has wide-reaching refactors.
 
 ### 🔍 Find a symbol
 
 ```bash
 pureast search "Handler" ./examples/app
-pureast list ./examples/app --grouped
+pureast list ./examples/app                          # grouped by kind (default)
+pureast list ./examples/app --grouped=false          # flat list
 ```
 
 ---
