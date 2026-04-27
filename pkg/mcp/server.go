@@ -66,6 +66,12 @@ func routeToolCall(executor *ToolExecutor) Handler {
 					handler = executor.ExtractTypesHandler()
 				case "show_dependencies":
 					handler = executor.ShowDependenciesHandler()
+				case "dump_package":
+					handler = executor.DumpPackageHandler()
+				case "reverse_deps":
+					handler = executor.ReverseDepsHandler()
+				case "diff_since":
+					handler = executor.DiffSinceHandler()
 				default:
 					return ErrorResponse(req.ID, InvalidParams, "Unknown tool: "+params.Name)
 				}
@@ -217,6 +223,95 @@ func listToolsHandler() Handler {
 								},
 							},
 							"required": []string{"symbol", "path"},
+						},
+					},
+					{
+						"name": "dump_package",
+						"description": "Compact, signatures-mostly dump of every symbol in a Go package. " +
+							"This is the LLM-context flagship: use it first to get oriented in an " +
+							"unfamiliar package before drilling into specific symbols with extract_symbol.",
+						"inputSchema": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"path": map[string]interface{}{
+									"type":        "string",
+									"description": "Package path",
+								},
+								"kind": map[string]interface{}{
+									"type":        "string",
+									"description": "Filter by kind: all, struct, interface, function, method, const, var",
+									"default":     "all",
+								},
+								"exportedOnly": map[string]interface{}{
+									"type":        "boolean",
+									"description": "Only show exported symbols (capitalized names)",
+									"default":     false,
+								},
+								"format": map[string]interface{}{
+									"type":        "string",
+									"description": "Output format: 'go' (raw) or 'md' (markdown-fenced)",
+									"default":     "go",
+								},
+								"maxTokens": map[string]interface{}{
+									"type":        "integer",
+									"description": "Truncate output to fit a token budget (0 = unbounded). Line-aware truncation.",
+									"default":     0,
+								},
+							},
+							"required": []string{"path"},
+						},
+					},
+					{
+						"name": "reverse_deps",
+						"description": "Find which symbols use a given symbol. Use this for impact analysis: " +
+							"before suggesting a refactor of X, call reverse_deps to see what depends on X.",
+						"inputSchema": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"symbol": map[string]interface{}{
+									"type":        "string",
+									"description": "Target symbol name (e.g. 'UserService' or 'User.Validate')",
+								},
+								"path": map[string]interface{}{
+									"type":        "string",
+									"description": "Package path",
+								},
+								"transitive": map[string]interface{}{
+									"type":        "boolean",
+									"description": "Include indirect users (callers of callers). Default: direct only.",
+									"default":     false,
+								},
+							},
+							"required": []string{"symbol", "path"},
+						},
+					},
+					{
+						"name": "diff_since",
+						"description": "Dump symbols from Go files that have changed since a git ref. " +
+							"Intended for PR-review context: feed Claude only what's new in the branch.",
+						"inputSchema": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"ref": map[string]interface{}{
+									"type":        "string",
+									"description": "Git ref to diff against (branch, tag, or commit, e.g. 'main' or 'HEAD~5')",
+								},
+								"path": map[string]interface{}{
+									"type":        "string",
+									"description": "Repository path (defaults to '.')",
+								},
+								"format": map[string]interface{}{
+									"type":        "string",
+									"description": "Output format: 'go' or 'md'",
+									"default":     "go",
+								},
+								"maxTokens": map[string]interface{}{
+									"type":        "integer",
+									"description": "Token budget (0 = unbounded)",
+									"default":     0,
+								},
+							},
+							"required": []string{"ref"},
 						},
 					},
 				}

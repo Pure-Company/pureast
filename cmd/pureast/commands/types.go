@@ -21,13 +21,14 @@ import (
 )
 
 type TypesArgs struct {
-	FilePath       string
-	OutputFile     string
-	StructsOnly    bool
-	InterfacesOnly bool
-	Functions      bool
-	Methods        bool
-	Exported       bool
+	FilePath   string
+	OutputFile string
+	Kind       string // all|struct|interface
+	Format     string // go|md
+	Functions  bool   // [deprecated] use `pureast dump --kind func`
+	Methods    bool   // [deprecated] use `pureast dump --kind method`
+	Exported   bool
+	MaxTokens  int
 }
 
 type TypeDefinition struct {
@@ -49,62 +50,110 @@ type FunctionSignature struct {
 
 func NewTypesCommand() *cobra.Command {
 	cmd := cli.NewCommand[TypesArgs]("types").
-		Short("Extract type definitions and function signatures").
-		Long(`Extract type definitions, interfaces, and function signatures without implementations.
-Perfect for providing clean context to LLMs.
+		Short("Extract type definitions").
+		Long(`Extract type definitions (structs, interfaces, aliases) without
+function bodies. For functions and methods, prefer pureast dump --kind func
+or --kind method, which is the canonical path going forward.
 
-By default extracts:
-  - All structs and interfaces
-  
-Options:
-  --structs-only     Extract only struct types
-  --interfaces-only  Extract only interface types
-  --functions        Extract function signatures
-  --methods          Extract method signatures
-  --exported         Only exported symbols
+Filtering uses --kind:
+  --kind all        (default) structs and interfaces
+  --kind struct     only structs
+  --kind interface  only interfaces
 
 Examples:
-  pureast types --file ./pkg
-  pureast types --file ./pkg --structs-only
-  pureast types --file ./pkg --interfaces-only
-  pureast types --file ./pkg --functions --exported
-  pureast types --file ./pkg --functions --methods`).
+  pureast types ./pkg
+  pureast types ./pkg --kind struct
+  pureast types ./pkg --kind interface --exported
+  pureast types ./pkg --format md
+  pureast types ./pkg --max-tokens 4000`).
 		ParseArgs(parseTypesArgs).
 		Action(typesAction).
 		Build()
 
-	cmd.Flags().StringP("file", "f", "", "Go file or directory (required)")
 	cmd.Flags().StringP("output", "o", "", "Output file (default: stdout)")
-	cmd.Flags().Bool("structs-only", false, "Extract only structs")
-	cmd.Flags().Bool("interfaces-only", false, "Extract only interfaces")
-	cmd.Flags().Bool("functions", false, "Extract function signatures")
-	cmd.Flags().Bool("methods", false, "Extract method signatures")
+	cmd.Flags().String("kind", "all", "Filter: all|struct|interface")
+	cmd.Flags().String("format", "go", "Output format: go|md")
 	cmd.Flags().Bool("exported", false, "Only exported symbols")
+	cmd.Flags().Int("max-tokens", 0, "Truncate output to fit token budget (0 = unbounded)")
 
-	cmd.MarkFlagRequired("file")
+	// Deprecated flags — kept working so existing scripts don't break.
+	// The mutually-exclusive booleans were exactly the redundant-path
+	// smell we set out to fix; --kind is the canonical knob.
+	cmd.Flags().Bool("structs-only", false, "[deprecated] use --kind struct")
+	cmd.Flags().Bool("interfaces-only", false, "[deprecated] use --kind interface")
+	cmd.Flags().Bool("functions", false, "[deprecated] use `pureast dump --kind func`")
+	cmd.Flags().Bool("methods", false, "[deprecated] use `pureast dump --kind method`")
+
+	// Back-compat: --file deprecated alias for positional PATH
+	cmd.Flags().StringP("file", "f", "", "[deprecated] use positional PATH")
+
 	cmd.MarkFlagsMutuallyExclusive("structs-only", "interfaces-only")
 
 	return cmd
 }
 
 func parseTypesArgs(cmd *cobra.Command, args []string) result.Result[TypesArgs] {
-	file, _ := cmd.Flags().GetString("file")
+	path, err := resolvePath(cmd, args)
+	if err != nil {
+		return result.Err[TypesArgs](err)
+	}
 	output, _ := cmd.Flags().GetString("output")
+	kind, _ := cmd.Flags().GetString("kind")
+	format, _ := cmd.Flags().GetString("format")
+	exported, _ := cmd.Flags().GetBool("exported")
+	maxTokens, _ := cmd.Flags().GetInt("max-tokens")
+
+	// Deprecated boolean flags are translated into the canonical --kind.
+	// We warn once if either is explicitly set so the user knows they're
+	// on a path that's going away.
 	structsOnly, _ := cmd.Flags().GetBool("structs-only")
 	interfacesOnly, _ := cmd.Flags().GetBool("interfaces-only")
 	functions, _ := cmd.Flags().GetBool("functions")
 	methods, _ := cmd.Flags().GetBool("methods")
-	exported, _ := cmd.Flags().GetBool("exported")
+
+	if structsOnly {
+		warnDeprecated("--structs-only", "--kind struct")
+		kind = "struct"
+	}
+	if interfacesOnly {
+		warnDeprecated("--interfaces-only", "--kind interface")
+		kind = "interface"
+	}
+	if functions {
+		warnDeprecated("--functions", "pureast dump --kind func")
+	}
+	if methods {
+		warnDeprecated("--methods", "pureast dump --kind method")
+	}
+
+	switch kind {
+	case "all", "struct", "interface":
+	default:
+		return result.Err[TypesArgs](fmt.Errorf(
+			"invalid --kind %q (want: all|struct|interface)", kind))
+	}
+	if format != "go" && format != "md" {
+		return result.Err[TypesArgs](fmt.Errorf(
+			"invalid --format %q (want: go|md)", format))
+	}
 
 	return result.Ok(TypesArgs{
-		FilePath:       file,
-		OutputFile:     output,
-		StructsOnly:    structsOnly,
-		InterfacesOnly: interfacesOnly,
-		Functions:      functions,
-		Methods:        methods,
-		Exported:       exported,
+		FilePath:   path,
+		OutputFile: output,
+		Kind:       kind,
+		Format:     format,
+		Functions:  functions,
+		Methods:    methods,
+		Exported:   exported,
+		MaxTokens:  maxTokens,
 	})
+}
+
+// warnDeprecated emits a one-line stderr notice steering the user to the
+// canonical flag. We keep the deprecated path working — the warning is
+// the cost of using it.
+func warnDeprecated(old, replacement string) {
+	fmt.Fprintf(os.Stderr, "warning: %s is deprecated, use %s\n", old, replacement)
 }
 
 func typesAction(ctx context.Context, args TypesArgs) result.Result[cli.Output] {
@@ -119,14 +168,17 @@ func typesAction(ctx context.Context, args TypesArgs) result.Result[cli.Output] 
 
 	var output strings.Builder
 
-	// Extract types
+	// Type extraction is the canonical job for this verb. The Kind
+	// switch is the single knob — the old --structs-only/--interfaces-only
+	// pair has been collapsed into one path.
 	if !args.Functions && !args.Methods {
 		var types []extract.TypeDeclaration
-		if args.StructsOnly {
+		switch args.Kind {
+		case "struct":
 			types = extract.ExtractAllStructs(pkgNode)
-		} else if args.InterfacesOnly {
+		case "interface":
 			types = extract.ExtractAllInterfaces(pkgNode)
-		} else {
+		default: // "all"
 			types = extract.ExtractAllStructsAndInterfaces(pkgNode)
 		}
 
@@ -145,7 +197,8 @@ func typesAction(ctx context.Context, args TypesArgs) result.Result[cli.Output] 
 		output.WriteString(code)
 	}
 
-	// Extract function signatures
+	// Function/method extraction is on a deprecation path; preserved
+	// here so existing scripts keep working until removal.
 	if args.Functions || args.Methods {
 		signatures, err := extractSignatures(args.FilePath, args.Exported, args.Functions, args.Methods)
 		if err != nil {
@@ -154,15 +207,22 @@ func typesAction(ctx context.Context, args TypesArgs) result.Result[cli.Output] 
 				ExitCode: 1,
 			})
 		}
-
 		if output.Len() > 0 {
 			output.WriteString("\n\n")
 		}
-
 		formatSignaturesOutput(&output, signatures)
 	}
 
 	code := output.String()
+
+	// Apply budget before format wrapping so a markdown fence always closes.
+	if args.MaxTokens > 0 {
+		code, _ = truncateToBudget(code, args.MaxTokens)
+	}
+	if args.Format == "md" {
+		title := fmt.Sprintf("%s — types", pkgNode.Name)
+		code = renderAsMarkdown(title, code)
+	}
 
 	if args.OutputFile != "" {
 		if err := os.WriteFile(args.OutputFile, []byte(code), 0644); err != nil {

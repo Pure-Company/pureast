@@ -1,338 +1,294 @@
-# 🎯 PureAST CLI Reference Guide
+# PureAST CLI Reference
 
-## **Complete Command Reference**
+PureAST extracts Go symbols, analyzes dependencies, and emits compact
+representations suitable for feeding to an LLM as context.
 
-### **1. Search & Discovery**
+The CLI is organized as eight verbs. Each one does one thing.
 
-#### **Fuzzy Symbol Search**
-```bash
-# Search for symbols with fuzzy matching
-./pureast -file ./pkg/mcp -search -pattern "Handler"
-
-# Search in Go stdlib
-./pureast -file $GOROOT/src/net/http -search -pattern "Server"
-
-# Search with more workers for speed
-./pureast -file ./pkg -search -pattern "Concurrent" -workers 16
+```
+pureast dump      # every symbol, signatures only — LLM context flagship
+pureast extract   # one symbol with its transitive dependencies
+pureast deps      # what does a symbol depend on (or who depends on it)
+pureast diff      # symbols in files changed since a git ref
+pureast search    # fuzzy symbol search
+pureast list      # enumerate all symbols
+pureast types     # type declarations only
+pureast proto     # generate Protocol Buffer schema
 ```
 
-#### **List All Symbols**
+Path is always positional and defaults to the current directory:
+
 ```bash
-# List all symbols in a package
-./pureast -file ./pkg/mcp -list-symbols
-
-# List symbols grouped by kind (default)
-./pureast -file ./pkg/mcp -list-symbols -group
-
-# List symbols without grouping
-./pureast -file ./pkg/mcp -list-symbols -group=false
-
-# List symbols in Go stdlib
-./pureast -file $GOROOT/src/net/http -list-symbols
-```
-
-#### **Build Search Index**
-```bash
-# Build and save index for fast searches
-./pureast -file ./pkg -index
-
-# Build index with custom path
-./pureast -file ./pkg -index -index-path ./my-index.json
-
-# Use existing index for searches (loads automatically)
-./pureast -file ./pkg -search -pattern "Server"
+pureast dump          # equivalent to: pureast dump .
+pureast dump ./pkg    # explicit path
+pureast dump --file ./pkg   # deprecated, still works, warns to stderr
 ```
 
 ---
 
-### **2. Extract Code**
+## Global conventions
 
-#### **Extract Single Symbol**
-```bash
-# Extract a specific type with all dependencies
-./pureast -file ./pkg/mcp -symbol MCPResponse
+| Convention                | Notes                                                                  |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `[PATH]`                  | Always positional, optional, defaults to `.`                           |
+| `-o FILE`, `--output FILE`| Write to a file instead of stdout. Available wherever output is bulky. |
+| `--format go\|md`         | Where applicable. `go` = raw, `md` = fenced markdown for LLM contexts. |
+| `--max-tokens N`          | Where applicable. Line-aware truncation to fit a budget.               |
+| `--file PATH`             | **Deprecated** alias for the positional `[PATH]`. Warns to stderr.     |
 
-# Extract to file
-./pureast -file ./pkg/mcp -symbol MCPResponse -output response.go
+`--max-tokens` uses a 3.5-chars-per-token approximation (well-known
+OpenAI guidance). Pipe through your model's actual tokenizer for exact
+counts. Truncation is line-aware with a `// ... truncated to fit token
+budget ...` marker so output stays valid Go.
 
-# Extract with minimal dependencies (fewer transitive deps)
-./pureast -file ./pkg/mcp -symbol MCPResponse -minimal
+---
 
-# Extract from Go stdlib
-./pureast -file $GOROOT/src/net/http -symbol Server -output server.go
+## `pureast dump` — every symbol
+
+Walks the package, emits every top-level symbol (struct, interface,
+type alias, func, method, const, var). Default output is signatures
+only. This is the verb to reach for when feeding a package to an LLM.
+
+```
+pureast dump [PATH] [flags]
 ```
 
-#### **Extract Multiple Symbols**
-```bash
-# Extract multiple symbols (comma-separated)
-./pureast -file ./pkg/mcp -symbol "Server,Handler,MCPResponse" -output mcp_core.go
+| Flag             | Default | Effect                                                             |
+| ---------------- | ------- | ------------------------------------------------------------------ |
+| `--kind K`       | `all`   | Filter: `all\|type\|struct\|interface\|func\|method\|const\|var` |
+| `--bodies`       | off     | Include function bodies (uses `go/printer`)                        |
+| `--exported`     | off     | Only exported symbols                                              |
+| `--include-tests`| off     | Include `_test.go` files                                           |
+| `--no-docs`      | off     | Strip doc comments                                                 |
+| `--format`       | `go`    | `go` or `md` (markdown-fenced)                                     |
+| `--max-tokens N` | 0       | Truncate to fit budget (0 = unbounded)                             |
+| `-o FILE`        |         | Output file                                                        |
 
-# Extract with regex pattern
-./pureast -file ./pkg/mcp -symbol "MCP.*" -output mcp_types.go
+Examples:
+
+```bash
+pureast dump ./pkg                      # everything, signatures
+pureast dump ./pkg --bodies             # include implementations
+pureast dump ./pkg --kind interface     # only interfaces
+pureast dump ./pkg --exported           # public API surface
+pureast dump ./pkg --max-tokens 4000    # fit a budget
+pureast dump ./pkg --format md -o ctx.md
 ```
 
 ---
 
-### **3. Extract Types**
+## `pureast extract` — one symbol with deps
 
-#### **Extract All Types (Best for LLM Context)**
-```bash
-# Extract ALL structs and interfaces (perfect for AI analysis)
-./pureast -file ./pkg/mcp -all-types -output mcp_types.go
+Extracts a single symbol along with its transitive dependencies as
+compilable code. Default includes constructors and methods.
 
-# Extract types from Go stdlib for LLM context
-./pureast -file $GOROOT/src/net/http -all-types -output http_api.go
-
-# Extract types with workers
-./pureast -file ./large-pkg -all-types -output types.go -workers 16
+```
+pureast extract SYMBOL [PATH] [flags]
 ```
 
-#### **Extract Only Structs**
+| Flag             | Default | Effect                                       |
+| ---------------- | ------- | -------------------------------------------- |
+| `--minimal`      | off     | Direct (non-transitive) dependencies only    |
+| `-w, --workers N`| 0       | Concurrent workers (0 = NumCPU)              |
+| `--format`       | `go`    | `go` or `md`                                 |
+| `--max-tokens N` | 0       | Truncate to fit budget                       |
+| `-o FILE`        |         | Output file                                  |
+
+Examples:
+
 ```bash
-# Extract struct definitions only
-./pureast -file ./pkg/mcp -structs -output structs.go
-
-# Structs from Go stdlib
-./pureast -file $GOROOT/src/net/http -structs -output http_structs.go
-```
-
-#### **Extract Only Interfaces**
-```bash
-# Extract interface definitions only
-./pureast -file ./pkg/mcp -interfaces -output interfaces.go
-
-# Interfaces from Go stdlib
-./pureast -file $GOROOT/src/net/http -interfaces -output http_interfaces.go
-```
-
-#### **Types Summary**
-```bash
-# Show summary of all types (counts, stats)
-./pureast -file ./pkg/mcp -types-summary
-
-# Summary for large codebase
-./pureast -file ./entire-project -types-summary -workers 16
+pureast extract User ./pkg
+pureast extract Profile ./pkg --minimal
+pureast extract UserService ./pkg -o service.go
+pureast extract User ./pkg --format md
 ```
 
 ---
 
-### **4. Dependency Analysis**
+## `pureast deps` — dependency analysis
 
-#### **Show Dependencies**
-```bash
-# Show dependencies for a symbol
-./pureast -file ./pkg/mcp -symbol Server -deps
+Shows what a symbol depends on (or who depends on it, with `--reverse`).
 
-# Show dependencies only (no code generation)
-./pureast -file ./pkg/mcp -symbol MCPResponse -deps
-
-# Dependencies for stdlib type
-./pureast -file $GOROOT/src/net/http -symbol Server -deps
+```
+pureast deps SYMBOL [PATH] [flags]
 ```
 
-#### **Show Methods**
+| Flag         | Default | Effect                                                 |
+| ------------ | ------- | ------------------------------------------------------ |
+| `--format`   | `text`  | `text\|dot\|json`                                      |
+| `--depth N`  | -1      | Max traversal depth (`-1` = unbounded, `0` = direct)   |
+| `--reverse`  | off     | Show users instead of dependencies                     |
+| `--minimal`  | off     | Equivalent to a small bounded depth (legacy)           |
+
+Mutually exclusive: `--minimal` and `--depth N` (use one).
+
+JSON output is stable: lists are alphabetically sorted, fields are
+fixed. Suitable for LLM caching where byte-identical output matters.
+
+Examples:
+
 ```bash
-# Show methods for a type
-./pureast -file ./pkg/mcp -symbol Server -methods
-
-# Show methods from stdlib
-./pureast -file $GOROOT/src/net/http -symbol Server -methods
-```
-
-#### **Generate Dependency Report**
-```bash
-# Generate full dependency report
-./pureast -file ./pkg/mcp -symbol Server -report
-
-# Report with graph
-./pureast -file ./pkg/mcp -symbol Server -report -output report.txt
-
-# Report for multiple symbols
-./pureast -file ./pkg -symbol "Server,Handler" -report
+pureast deps User ./pkg                         # text report
+pureast deps User ./pkg --depth 1               # one hop forward
+pureast deps User ./pkg --reverse               # who uses User
+pureast deps User ./pkg --reverse --depth 0     # direct callers only
+pureast deps User ./pkg --format json
+pureast deps User ./pkg --format dot > graph.dot
+dot -Tpng graph.dot -o graph.png
 ```
 
 ---
 
-### **5. Graph Generation**
+## `pureast diff` — symbols in changed files
 
-#### **DOT Graph**
+Extracts every symbol in `.go` files that differ between a git ref and
+HEAD. The intended use is PR-review and "what's new" LLM context: feed
+only the code that changed in this branch, not the whole repo.
+
+```
+pureast diff REF [PATH] [flags]
+```
+
+| Flag             | Default | Effect                                  |
+| ---------------- | ------- | --------------------------------------- |
+| `--bodies`       | off     | Include function bodies                 |
+| `--format`       | `go`    | `go` or `md`                            |
+| `--max-tokens N` | 0       | Truncate to fit budget                  |
+| `-o FILE`        |         | Output file                             |
+
+REF is any git revision: branch, tag, commit, `HEAD~N`.
+
+Examples:
+
 ```bash
-# Generate DOT graph of dependencies
-./pureast -file ./pkg/mcp -symbol Server -dot -output server.dot
+pureast diff main
+pureast diff origin/main ./pkg
+pureast diff HEAD~5 --bodies
+pureast diff main --format md -o pr-context.md
+```
 
-# Convert to PNG
-./pureast -file ./pkg/mcp -symbol Server -dot -output server.dot
-dot -Tpng server.dot -o server.png
+Granularity is file-level: a symbol in a changed file is included
+even if it wasn't itself modified. Line-level filtering is a future
+improvement.
 
-# Graph for entire package
-./pureast -file ./pkg/mcp -dot -output mcp.dot
+---
+
+## `pureast search` — fuzzy symbol search
+
+Find symbols by approximate name match.
+
+```
+pureast search PATTERN [PATH] [flags]
+```
+
+| Flag               | Default | Effect                                  |
+| ------------------ | ------- | --------------------------------------- |
+| `--kind K`         |         | Filter: `struct\|interface\|function`   |
+| `-n, --max-results`| 20      | Maximum results to return               |
+
+Examples:
+
+```bash
+pureast search "Handler" ./pkg
+pureast search "User" ./pkg --kind struct
+pureast search "Process" ./pkg -n 5
 ```
 
 ---
 
-### **6. Performance Tuning**
+## `pureast list` — enumerate symbols
 
-#### **Worker Configuration**
-```bash
-# Auto-detect CPU count (default)
-./pureast -file ./pkg -workers 0
+List every symbol with optional grouping.
 
-# Specific worker count
-./pureast -file ./pkg -workers 8
-
-# Maximum parallelism
-./pureast -file ./pkg -workers 32
-
-# Single-threaded (debugging)
-./pureast -file ./pkg -workers 1
+```
+pureast list [PATH] [flags]
 ```
 
-#### **Batch Processing**
+| Flag             | Default | Effect                          |
+| ---------------- | ------- | ------------------------------- |
+| `--grouped`      | true    | Group by kind                   |
+
+Examples:
+
 ```bash
-# Custom batch size for concurrent processing
-./pureast -file ./large-pkg -batch 20
-
-# Smaller batches (more memory efficient)
-./pureast -file ./huge-pkg -batch 5
-
-# Larger batches (more throughput)
-./pureast -file ./pkg -batch 50
+pureast list ./pkg
+pureast list ./pkg --grouped=false
 ```
 
 ---
 
-### **7. Recursive Processing**
+## `pureast types` — type declarations only
+
+Extract only type declarations (structs, interfaces, aliases) — no
+function bodies. For functions and methods, prefer
+`pureast dump --kind func` or `--kind method`.
+
+```
+pureast types [PATH] [flags]
+```
+
+| Flag                 | Default | Effect                                     |
+| -------------------- | ------- | ------------------------------------------ |
+| `--kind K`           | `all`   | `all\|struct\|interface`                   |
+| `--exported`         | off     | Only exported symbols                      |
+| `--format`           | `go`    | `go` or `md`                               |
+| `--max-tokens N`     | 0       | Truncate to fit budget                     |
+| `--structs-only`     | off     | **Deprecated**, use `--kind struct`        |
+| `--interfaces-only`  | off     | **Deprecated**, use `--kind interface`     |
+| `--functions`        | off     | **Deprecated**, use `dump --kind func`     |
+| `--methods`          | off     | **Deprecated**, use `dump --kind method`   |
+
+Examples:
 
 ```bash
-# Process directories recursively (default)
-./pureast -file ./pkg -recursive
-
-# Non-recursive (single directory only)
-./pureast -file ./pkg -recursive=false
-
-# Recursive with all types
-./pureast -file ./entire-project -all-types -recursive -output api.go
+pureast types ./pkg
+pureast types ./pkg --kind struct
+pureast types ./pkg --kind interface --exported
 ```
 
 ---
 
-## **Common Use Cases**
+## `pureast proto` — Go → Protocol Buffers
 
-### **🔍 Understanding a New Codebase**
-```bash
-# 1. List all symbols to get overview
-./pureast -file ./new-project -list-symbols
+Generate `.proto` schema from Go struct definitions.
 
-# 2. Search for main types
-./pureast -file ./new-project -search -pattern "Server"
-
-# 3. Extract API surface for LLM analysis
-./pureast -file ./new-project -all-types -output api.go
+```
+pureast proto [PATH] [flags]
 ```
 
-### **📚 Creating LLM Context**
+| Flag             | Default | Effect                                       |
+| ---------------- | ------- | -------------------------------------------- |
+| `--types LIST`   |         | Comma-separated type names (empty = all)     |
+| `-w, --workers`  | 0       | Concurrent workers (0 = NumCPU)              |
+| `-o FILE`        |         | Output file                                  |
+
+Examples:
+
 ```bash
-# Extract complete API surface from Go stdlib
-./pureast -file $GOROOT/src/net/http -all-types -output http_context.go
-
-# Extract from your own package
-./pureast -file ./pkg/myapp -all-types -output myapp_context.go
-
-# Extract multiple packages
-./pureast -file ./pkg/api -all-types -output api_context.go
-./pureast -file ./pkg/db -all-types -output db_context.go
-```
-
-### **🔧 Extracting Specific Components**
-```bash
-# Extract a feature with all dependencies
-./pureast -file ./pkg/auth -symbol "AuthService" -output auth.go
-
-# Extract multiple related types
-./pureast -file ./pkg/api -symbol "Handler,Middleware,Router" -output api_core.go
-
-# Extract with minimal deps for testing
-./pureast -file ./pkg -symbol "Calculator" -minimal -output calc.go
-```
-
-### **📊 Analyzing Dependencies**
-```bash
-# Show what a type depends on
-./pureast -file ./pkg -symbol "Server" -deps
-
-# Generate visual dependency graph
-./pureast -file ./pkg -symbol "Server" -dot -output deps.dot
-dot -Tpng deps.dot -o deps.png
-
-# Full dependency report
-./pureast -file ./pkg -symbol "Server" -report -output report.txt
-```
-
-### **🔎 Advanced Search**
-```bash
-# Fuzzy search with index for speed
-./pureast -file ./large-project -index
-./pureast -file ./large-project -search -pattern "Handler"
-
-# Search and extract
-./pureast -file ./pkg -search -pattern "Server"
-./pureast -file ./pkg -symbol "Server" -output server.go
+pureast proto ./pkg
+pureast proto ./pkg --types User,Profile
+pureast proto ./pkg -o schema.proto
 ```
 
 ---
 
-## **Performance Tips**
+## Migration from the legacy flat-flag CLI
 
-1. **Use workers** for large codebases: `-workers 16`
-2. **Build index** for repeated searches: `-index`
-3. **Use minimal** for faster extraction: `-minimal`
-4. **Adjust batch size** for memory: `-batch 10`
-5. **Non-recursive** for single dir: `-recursive=false`
+The pre-Cobra CLI took every option as a flag on a single `pureast`
+invocation (`pureast -file ./pkg -symbol User -deps -report`). That
+form no longer exists. Migration is mostly mechanical:
 
----
-
-## **Examples by Package Size**
-
-### **Small Package (< 50 files)**
-```bash
-./pureast -file ./pkg -all-types -output api.go
-```
-
-### **Medium Package (50-500 files)**
-```bash
-./pureast -file ./pkg -all-types -workers 8 -output api.go
-```
-
-### **Large Package (> 500 files)**
-```bash
-./pureast -file ./pkg -index
-./pureast -file ./pkg -all-types -workers 16 -batch 20 -output api.go
-```
-
-### **Go Standard Library**
-```bash
-./pureast -file $GOROOT/src/net/http -all-types -workers 12 -output http.go
-```
-
----
-
-## **Quick Reference Table**
-
-| Task | Command |
-|------|---------|
-| Search symbols | `-search -pattern "Foo"` |
-| List symbols | `-list-symbols` |
-| Extract type | `-symbol "Foo"` |
-| Extract multiple | `-symbol "Foo,Bar,Baz"` |
-| All types (LLM) | `-all-types` |
-| Only structs | `-structs` |
-| Only interfaces | `-interfaces` |
-| Show dependencies | `-deps` |
-| Show methods | `-methods` |
-| Generate graph | `-dot` |
-| Build index | `-index` |
-| Parallel processing | `-workers 16` |
-| Output to file | `-output file.go` |
-
----
-
+| Old                                          | New                                              |
+| -------------------------------------------- | ------------------------------------------------ |
+| `-file ./pkg`                                | positional `./pkg` (also `--file ./pkg`, warns)  |
+| `-symbol X` (alone)                          | `extract X`                                      |
+| `-symbol X -deps`                            | `deps X`                                         |
+| `-symbol X -deps -report`                    | `deps X` (text is default)                       |
+| `-symbol X -deps -dot`                       | `deps X --format dot`                            |
+| `-symbol X -minimal`                         | `extract X --minimal`                            |
+| `-search -pattern X`                         | `search X`                                       |
+| `-list-symbols`                              | `list`                                           |
+| `-all-types`                                 | `types` (or `dump` for everything-everything)    |
+| `-structs`                                   | `types --kind struct`                            |
+| `-interfaces`                                | `types --kind interface`                         |
+| `-types-summary`                             | `list` (counts at top)                           |

@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"go/ast"
 	"regexp"
 	"sort"
 	"strings"
@@ -93,20 +94,51 @@ func extractSymbolInfo(declNode astpkg.DeclNode, packageName string) []SymbolInf
 	}}
 }
 
-// inferKindFromDecl infers the kind from the declaration
+// inferKindFromDecl infers the kind from the declaration by inspecting
+// the underlying ast.Decl directly. Earlier versions of this function
+// inferred from the dependency set, which gave the wrong answer for
+// types whose own dependencies don't reference themselves (e.g. the
+// struct User, whose Deps doesn't contain "User"). The AST inspection
+// is unambiguous: the declaration node either is a struct, interface,
+// func, etc., or it isn't.
 func inferKindFromDecl(declNode astpkg.DeclNode) string {
-	// Check the actual AST declaration type
-	// For now, use simple heuristics based on dependencies
-	if declNode.Deps.Structs.Size() > 0 {
-		return "struct"
-	}
-	if declNode.Deps.Interfaces.Size() > 0 {
-		return "interface"
-	}
-	if declNode.Deps.Functions.Size() > 0 || strings.Contains(declNode.Name, ".") {
+	switch d := declNode.Decl.(type) {
+	case *ast.FuncDecl:
+		// Methods carry a receiver list; bare functions don't. The
+		// caller already strips "Type." prefixes from the name and
+		// sets kind="method" before reaching this branch in the
+		// happy path, but we double-check here for callers (like
+		// the MCP renderer) that hand us DeclNodes directly.
+		if d.Recv != nil && len(d.Recv.List) > 0 {
+			return "method"
+		}
 		return "function"
+	case *ast.GenDecl:
+		// GenDecl groups specs (type, const, var, import). For our
+		// purposes only the first spec's shape matters because the
+		// extractor splits multi-spec blocks into separate DeclNodes.
+		if len(d.Specs) == 0 {
+			return "type"
+		}
+		switch s := d.Specs[0].(type) {
+		case *ast.TypeSpec:
+			switch s.Type.(type) {
+			case *ast.StructType:
+				return "struct"
+			case *ast.InterfaceType:
+				return "interface"
+			}
+			return "type"
+		case *ast.ValueSpec:
+			if d.Tok.String() == "const" {
+				return "const"
+			}
+			return "var"
+		case *ast.ImportSpec:
+			return "import"
+		}
 	}
-	return "type"
+	return "unknown"
 }
 
 // MatchSymbols filters symbols by pattern (regex or exact match)

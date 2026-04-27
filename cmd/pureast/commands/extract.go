@@ -20,8 +20,10 @@ type ExtractArgs struct {
 	FilePath   string
 	Symbol     string
 	OutputFile string
+	Format     string // go|md
 	Minimal    bool
 	Workers    int
+	MaxTokens  int
 }
 
 func NewExtractCommand() *cobra.Command {
@@ -36,39 +38,60 @@ By default, includes:
   - Methods
 
 Examples:
-  pureast extract User --file ./pkg
-  pureast extract Profile --file ./pkg --minimal
-  pureast extract UserService --file ./pkg --output service.go`).
+  pureast extract User ./pkg
+  pureast extract Profile ./pkg --minimal
+  pureast extract UserService ./pkg -o service.go
+  pureast extract User ./pkg --format md
+  pureast extract User ./pkg --max-tokens 2000`).
 		ParseArgs(parseExtractArgs).
 		Action(extractAction).
 		Build()
 
-	cmd.Flags().StringP("file", "f", "", "Go file or directory (required)")
 	cmd.Flags().StringP("output", "o", "", "Output file (default: stdout)")
+	cmd.Flags().String("format", "go", "Output format: go|md")
 	cmd.Flags().Bool("minimal", false, "Extract minimal dependencies only")
 	cmd.Flags().IntP("workers", "w", 0, "Number of workers (0 = auto)")
+	cmd.Flags().Int("max-tokens", 0, "Truncate output to fit token budget (0 = unbounded)")
 
-	cmd.MarkFlagRequired("file")
+	// Back-compat: --file kept as deprecated alias. The positional
+	// PATH is canonical; --file warns and is removed in a future release.
+	cmd.Flags().StringP("file", "f", "", "[deprecated] use positional PATH")
 
 	return cmd
 }
 
 func parseExtractArgs(cmd *cobra.Command, args []string) result.Result[ExtractArgs] {
-	if len(args) != 1 {
-		return result.Err[ExtractArgs](fmt.Errorf("requires symbol name"))
+	if len(args) < 1 {
+		return result.Err[ExtractArgs](fmt.Errorf("requires SYMBOL [PATH]"))
+	}
+	if len(args) > 2 {
+		return result.Err[ExtractArgs](fmt.Errorf("expected SYMBOL [PATH], got %d args", len(args)))
 	}
 
-	file, _ := cmd.Flags().GetString("file")
+	path, err := resolvePathFromTail(cmd, args[1:])
+	if err != nil {
+		return result.Err[ExtractArgs](err)
+	}
+
 	output, _ := cmd.Flags().GetString("output")
+	format, _ := cmd.Flags().GetString("format")
 	minimal, _ := cmd.Flags().GetBool("minimal")
 	workers, _ := cmd.Flags().GetInt("workers")
+	maxTokens, _ := cmd.Flags().GetInt("max-tokens")
+
+	if format != "go" && format != "md" {
+		return result.Err[ExtractArgs](fmt.Errorf(
+			"invalid --format %q (want: go|md)", format))
+	}
 
 	return result.Ok(ExtractArgs{
-		FilePath:   file,
+		FilePath:   path,
 		Symbol:     args[0],
 		OutputFile: output,
+		Format:     format,
 		Minimal:    minimal,
 		Workers:    workers,
+		MaxTokens:  maxTokens,
 	})
 }
 
@@ -100,6 +123,16 @@ func extractAction(ctx context.Context, args ExtractArgs) result.Result[cli.Outp
 			Text:     fmt.Sprintf("Error: %v\n", err),
 			ExitCode: 1,
 		})
+	}
+
+	// Token budget applied before format wrapping so a markdown fence
+	// always closes properly. Truncation is line-aware (see helpers.go).
+	if args.MaxTokens > 0 {
+		code, _ = truncateToBudget(code, args.MaxTokens)
+	}
+	if args.Format == "md" {
+		title := fmt.Sprintf("%s.%s", pkgNode.Name, args.Symbol)
+		code = renderAsMarkdown(title, code)
 	}
 
 	if args.OutputFile != "" {
