@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
-	"github.com/vinodhalaharvi/purekernels/pkg/result"
 )
 
 type SearchArgs struct {
@@ -42,42 +41,39 @@ Examples:
 	return cmd
 }
 
-func parseSearchArgs(cmd *cobra.Command, args []string) result.Result[SearchArgs] {
+func parseSearchArgs(cmd *cobra.Command, args []string) (SearchArgs, error) {
 	if len(args) < 1 {
-		return result.Err[SearchArgs](fmt.Errorf("requires PATTERN [PATH]"))
+		return SearchArgs{}, fmt.Errorf("requires PATTERN [PATH]")
 	}
 	if len(args) > 2 {
-		return result.Err[SearchArgs](fmt.Errorf("expected PATTERN [PATH], got %d args", len(args)))
+		return SearchArgs{}, fmt.Errorf("expected PATTERN [PATH], got %d args", len(args))
 	}
 
 	path, err := resolvePathFromTail(cmd, args[1:])
 	if err != nil {
-		return result.Err[SearchArgs](err)
+		return SearchArgs{}, err
 	}
 
 	kind, _ := cmd.Flags().GetString("kind")
 	maxResults, _ := cmd.Flags().GetInt("max-results")
 
-	return result.Ok(SearchArgs{
+	return SearchArgs{
 		FilePath:   path,
 		Pattern:    args[0],
 		Kind:       kind,
 		MaxResults: maxResults,
-	})
+	}, nil
 }
 
 // searchAction discovers all symbols, filters with FuzzySearch, and
 // renders the ranked list. There is no separate "index build" step:
 // pureast invocations are one-shot, so building an index just to
 // throw it away after one query was overhead with no payoff.
-func searchAction(ctx context.Context, args SearchArgs) result.Result[cli.Output] {
+func searchAction(ctx context.Context, args SearchArgs) (cli.Output, error) {
 	fset := token.NewFileSet()
 	pkgNode, err := extract.ExtractDirectoryConcurrent(fset, args.FilePath, true, 0)
 	if err != nil {
-		return result.Ok(cli.Output{
-			Text:     fmt.Sprintf("Error: %v\n", err),
-			ExitCode: 1,
-		})
+		return cli.Output{}, fmt.Errorf("extract %s: %w", args.FilePath, err)
 	}
 
 	symbols := extract.DiscoverAllSymbols(pkgNode)
@@ -90,5 +86,5 @@ func searchAction(ctx context.Context, args SearchArgs) result.Result[cli.Output
 			i+1, m.Symbol.Name, m.Symbol.Kind, m.Score)
 	}
 
-	return result.Ok(cli.Output{Text: b.String(), ExitCode: 0})
+	return cli.Output{Text: b.String(), ExitCode: 0}, nil
 }

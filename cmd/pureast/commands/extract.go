@@ -13,7 +13,6 @@ import (
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
 	"github.com/vinodhalaharvi/pureast/pkg/codegen"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
-	"github.com/vinodhalaharvi/purekernels/pkg/result"
 )
 
 type ExtractArgs struct {
@@ -60,17 +59,17 @@ Examples:
 	return cmd
 }
 
-func parseExtractArgs(cmd *cobra.Command, args []string) result.Result[ExtractArgs] {
+func parseExtractArgs(cmd *cobra.Command, args []string) (ExtractArgs, error) {
 	if len(args) < 1 {
-		return result.Err[ExtractArgs](fmt.Errorf("requires SYMBOL [PATH]"))
+		return ExtractArgs{}, fmt.Errorf("requires SYMBOL [PATH]")
 	}
 	if len(args) > 2 {
-		return result.Err[ExtractArgs](fmt.Errorf("expected SYMBOL [PATH], got %d args", len(args)))
+		return ExtractArgs{}, fmt.Errorf("expected SYMBOL [PATH], got %d args", len(args))
 	}
 
 	path, err := resolvePathFromTail(cmd, args[1:])
 	if err != nil {
-		return result.Err[ExtractArgs](err)
+		return ExtractArgs{}, err
 	}
 
 	output, _ := cmd.Flags().GetString("output")
@@ -80,11 +79,11 @@ func parseExtractArgs(cmd *cobra.Command, args []string) result.Result[ExtractAr
 	maxTokens, _ := cmd.Flags().GetInt("max-tokens")
 
 	if format != "go" && format != "md" {
-		return result.Err[ExtractArgs](fmt.Errorf(
-			"invalid --format %q (want: go|md)", format))
+		return ExtractArgs{}, fmt.Errorf(
+			"invalid --format %q (want: go|md)", format)
 	}
 
-	return result.Ok(ExtractArgs{
+	return ExtractArgs{
 		FilePath:   path,
 		Symbol:     args[0],
 		OutputFile: output,
@@ -92,17 +91,14 @@ func parseExtractArgs(cmd *cobra.Command, args []string) result.Result[ExtractAr
 		Minimal:    minimal,
 		Workers:    workers,
 		MaxTokens:  maxTokens,
-	})
+	}, nil
 }
 
-func extractAction(ctx context.Context, args ExtractArgs) result.Result[cli.Output] {
+func extractAction(ctx context.Context, args ExtractArgs) (cli.Output, error) {
 	fset := token.NewFileSet()
 	pkgNode, err := extract.ExtractDirectoryConcurrent(fset, args.FilePath, true, args.Workers)
 	if err != nil {
-		return result.Ok(cli.Output{
-			Text:     fmt.Sprintf("Error: %v\n", err),
-			ExitCode: 1,
-		})
+		return cli.Output{}, fmt.Errorf("extract %s: %w", args.FilePath, err)
 	}
 
 	declMap := extract.BuildPackageDeclMap(pkgNode)
@@ -119,10 +115,7 @@ func extractAction(ctx context.Context, args ExtractArgs) result.Result[cli.Outp
 	gen := codegen.NewGenerator(fset)
 	code, err := gen.GenerateMinimal(pkgNode.Name, args.Symbol, declMap, deps)
 	if err != nil {
-		return result.Ok(cli.Output{
-			Text:     fmt.Sprintf("Error: %v\n", err),
-			ExitCode: 1,
-		})
+		return cli.Output{}, fmt.Errorf("generate %s: %w", args.Symbol, err)
 	}
 
 	// Token budget applied before format wrapping so a markdown fence
@@ -144,16 +137,13 @@ func extractAction(ctx context.Context, args ExtractArgs) result.Result[cli.Outp
 
 	if args.OutputFile != "" {
 		if err := os.WriteFile(args.OutputFile, []byte(code), 0644); err != nil {
-			return result.Ok(cli.Output{
-				Text:     fmt.Sprintf("Error writing file: %v\n", err),
-				ExitCode: 1,
-			})
+			return cli.Output{}, fmt.Errorf("write %s: %w", args.OutputFile, err)
 		}
-		return result.Ok(cli.Output{
+		return cli.Output{
 			Text:     fmt.Sprintf("✅ Written to %s\n", args.OutputFile),
 			ExitCode: 0,
-		})
+		}, nil
 	}
 
-	return result.Ok(cli.Output{Text: code, ExitCode: 0})
+	return cli.Output{Text: code, ExitCode: 0}, nil
 }

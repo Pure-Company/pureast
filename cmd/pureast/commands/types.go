@@ -17,7 +17,6 @@ import (
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
 	"github.com/vinodhalaharvi/pureast/pkg/codegen"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
-	"github.com/vinodhalaharvi/purekernels/pkg/result"
 )
 
 type TypesArgs struct {
@@ -105,7 +104,7 @@ Examples:
 	return cmd
 }
 
-func parseTypesArgs(cmd *cobra.Command, args []string) result.Result[TypesArgs] {
+func parseTypesArgs(cmd *cobra.Command, args []string) (TypesArgs, error) {
 	// Top-level deprecation notice. Prints once per invocation, before
 	// any output, so it's visible whether or not the user redirects
 	// stdout. The verb still works — this is just a heads-up that the
@@ -119,7 +118,7 @@ func parseTypesArgs(cmd *cobra.Command, args []string) result.Result[TypesArgs] 
 
 	path, err := resolvePath(cmd, args)
 	if err != nil {
-		return result.Err[TypesArgs](err)
+		return TypesArgs{}, err
 	}
 	output, _ := cmd.Flags().GetString("output")
 	kind, _ := cmd.Flags().GetString("kind")
@@ -153,15 +152,15 @@ func parseTypesArgs(cmd *cobra.Command, args []string) result.Result[TypesArgs] 
 	switch kind {
 	case "all", "struct", "interface":
 	default:
-		return result.Err[TypesArgs](fmt.Errorf(
-			"invalid --kind %q (want: all|struct|interface)", kind))
+		return TypesArgs{}, fmt.Errorf(
+			"invalid --kind %q (want: all|struct|interface)", kind)
 	}
 	if format != "go" && format != "md" {
-		return result.Err[TypesArgs](fmt.Errorf(
-			"invalid --format %q (want: go|md)", format))
+		return TypesArgs{}, fmt.Errorf(
+			"invalid --format %q (want: go|md)", format)
 	}
 
-	return result.Ok(TypesArgs{
+	return TypesArgs{
 		FilePath:   path,
 		OutputFile: output,
 		Kind:       kind,
@@ -170,7 +169,7 @@ func parseTypesArgs(cmd *cobra.Command, args []string) result.Result[TypesArgs] 
 		Methods:    methods,
 		Exported:   exported,
 		MaxTokens:  maxTokens,
-	})
+	}, nil
 }
 
 // warnDeprecated emits a one-line stderr notice steering the user to the
@@ -180,14 +179,11 @@ func warnDeprecated(old, replacement string) {
 	fmt.Fprintf(os.Stderr, "warning: %s is deprecated, use %s\n", old, replacement)
 }
 
-func typesAction(ctx context.Context, args TypesArgs) result.Result[cli.Output] {
+func typesAction(ctx context.Context, args TypesArgs) (cli.Output, error) {
 	fset := token.NewFileSet()
 	pkgNode, err := extract.ExtractDirectoryConcurrent(fset, args.FilePath, true, 0)
 	if err != nil {
-		return result.Ok(cli.Output{
-			Text:     fmt.Sprintf("Error: %v\n", err),
-			ExitCode: 1,
-		})
+		return cli.Output{}, fmt.Errorf("extract %s: %w", args.FilePath, err)
 	}
 
 	var output strings.Builder
@@ -213,10 +209,7 @@ func typesAction(ctx context.Context, args TypesArgs) result.Result[cli.Output] 
 			pkgNode.Deps.Imports.ToSlice(),
 		)
 		if err != nil {
-			return result.Ok(cli.Output{
-				Text:     fmt.Sprintf("Error: %v\n", err),
-				ExitCode: 1,
-			})
+			return cli.Output{}, fmt.Errorf("generate types: %w", err)
 		}
 		output.WriteString(code)
 	}
@@ -226,10 +219,7 @@ func typesAction(ctx context.Context, args TypesArgs) result.Result[cli.Output] 
 	if args.Functions || args.Methods {
 		signatures, err := extractSignatures(args.FilePath, args.Exported, args.Functions, args.Methods)
 		if err != nil {
-			return result.Ok(cli.Output{
-				Text:     fmt.Sprintf("Error: %v\n", err),
-				ExitCode: 1,
-			})
+			return cli.Output{}, fmt.Errorf("extract signatures: %w", err)
 		}
 		if output.Len() > 0 {
 			output.WriteString("\n\n")
@@ -256,18 +246,15 @@ func typesAction(ctx context.Context, args TypesArgs) result.Result[cli.Output] 
 
 	if args.OutputFile != "" {
 		if err := os.WriteFile(args.OutputFile, []byte(code), 0644); err != nil {
-			return result.Ok(cli.Output{
-				Text:     fmt.Sprintf("Error writing file: %v\n", err),
-				ExitCode: 1,
-			})
+			return cli.Output{}, fmt.Errorf("write %s: %w", args.OutputFile, err)
 		}
-		return result.Ok(cli.Output{
+		return cli.Output{
 			Text:     fmt.Sprintf("✓ Written to %s\n", args.OutputFile),
 			ExitCode: 0,
-		})
+		}, nil
 	}
 
-	return result.Ok(cli.Output{Text: code, ExitCode: 0})
+	return cli.Output{Text: code, ExitCode: 0}, nil
 }
 
 func extractSignatures(rootDir string, exportedOnly, includeFunctions, includeMethods bool) ([]FunctionSignature, error) {

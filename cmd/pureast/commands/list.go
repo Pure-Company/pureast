@@ -1,4 +1,4 @@
-// cmd/pureast-cobra/commands/list.go
+// cmd/pureast/commands/list.go
 package commands
 
 import (
@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
-	"github.com/vinodhalaharvi/purekernels/pkg/result"
 )
 
 type ListArgs struct {
@@ -37,32 +36,29 @@ Examples:
 	return cmd
 }
 
-func parseListArgs(cmd *cobra.Command, args []string) result.Result[ListArgs] {
+func parseListArgs(cmd *cobra.Command, args []string) (ListArgs, error) {
 	path, err := resolvePath(cmd, args)
 	if err != nil {
-		return result.Err[ListArgs](err)
+		return ListArgs{}, err
 	}
 	grouped, _ := cmd.Flags().GetBool("grouped")
 
-	return result.Ok(ListArgs{
+	return ListArgs{
 		FilePath:    path,
 		GroupByKind: grouped,
-	})
+	}, nil
 }
 
-func listAction(ctx context.Context, args ListArgs) result.Result[cli.Output] {
+func listAction(ctx context.Context, args ListArgs) (cli.Output, error) {
 	fset := token.NewFileSet()
 	pkgNode, err := extract.ExtractDirectoryConcurrent(fset, args.FilePath, true, 0)
 	if err != nil {
-		return result.Ok(cli.Output{
-			Text:     fmt.Sprintf("Error: %v\n", err),
-			ExitCode: 1,
-		})
+		return cli.Output{}, fmt.Errorf("extract %s: %w", args.FilePath, err)
 	}
 
 	symbols := extract.DiscoverAllSymbols(pkgNode)
 	output := fmt.Sprintf("Found %d symbols in package '%s'\n", len(symbols), pkgNode.Name)
 	output += extract.FormatSymbolList(symbols, args.GroupByKind)
 
-	return result.Ok(cli.Output{Text: output, ExitCode: 0})
+	return cli.Output{Text: output, ExitCode: 0}, nil
 }

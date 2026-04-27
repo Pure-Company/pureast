@@ -26,7 +26,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
-	"github.com/vinodhalaharvi/purekernels/pkg/result"
 )
 
 type DumpArgs struct {
@@ -87,10 +86,10 @@ Examples:
 	return cmd
 }
 
-func parseDumpArgs(cmd *cobra.Command, args []string) result.Result[DumpArgs] {
+func parseDumpArgs(cmd *cobra.Command, args []string) (DumpArgs, error) {
 	path, err := resolvePath(cmd, args)
 	if err != nil {
-		return result.Err[DumpArgs](err)
+		return DumpArgs{}, err
 	}
 
 	output, _ := cmd.Flags().GetString("output")
@@ -103,15 +102,15 @@ func parseDumpArgs(cmd *cobra.Command, args []string) result.Result[DumpArgs] {
 	maxTokens, _ := cmd.Flags().GetInt("max-tokens")
 
 	if !validDumpKind(kind) {
-		return result.Err[DumpArgs](fmt.Errorf(
-			"invalid --kind %q (want: all|type|struct|interface|func|method|const|var)", kind))
+		return DumpArgs{}, fmt.Errorf(
+			"invalid --kind %q (want: all|type|struct|interface|func|method|const|var)", kind)
 	}
 	if format != "go" && format != "md" {
-		return result.Err[DumpArgs](fmt.Errorf(
-			"invalid --format %q (want: go|md)", format))
+		return DumpArgs{}, fmt.Errorf(
+			"invalid --format %q (want: go|md)", format)
 	}
 
-	return result.Ok(DumpArgs{
+	return DumpArgs{
 		FilePath:     path,
 		OutputFile:   output,
 		Kind:         kind,
@@ -121,7 +120,7 @@ func parseDumpArgs(cmd *cobra.Command, args []string) result.Result[DumpArgs] {
 		IncludeTests: tests,
 		IncludeDocs:  !noDocs,
 		MaxTokens:    maxTokens,
-	})
+	}, nil
 }
 
 func validDumpKind(k string) bool {
@@ -132,13 +131,10 @@ func validDumpKind(k string) bool {
 	return false
 }
 
-func dumpAction(ctx context.Context, args DumpArgs) result.Result[cli.Output] {
+func dumpAction(ctx context.Context, args DumpArgs) (cli.Output, error) {
 	symbols, pkgName, err := collectSymbols(args)
 	if err != nil {
-		return result.Ok(cli.Output{
-			Text:     fmt.Sprintf("Error: %v\n", err),
-			ExitCode: 1,
-		})
+		return cli.Output{}, fmt.Errorf("collect symbols from %s: %w", args.FilePath, err)
 	}
 
 	out := renderDump(pkgName, symbols, args)
@@ -167,18 +163,15 @@ func dumpAction(ctx context.Context, args DumpArgs) result.Result[cli.Output] {
 
 	if args.OutputFile != "" {
 		if err := os.WriteFile(args.OutputFile, []byte(out), 0644); err != nil {
-			return result.Ok(cli.Output{
-				Text:     fmt.Sprintf("Error writing file: %v\n", err),
-				ExitCode: 1,
-			})
+			return cli.Output{}, fmt.Errorf("write %s: %w", args.OutputFile, err)
 		}
-		return result.Ok(cli.Output{
+		return cli.Output{
 			Text:     fmt.Sprintf("✓ Written %d symbols to %s\n", len(symbols), args.OutputFile),
 			ExitCode: 0,
-		})
+		}, nil
 	}
 
-	return result.Ok(cli.Output{Text: out, ExitCode: 0})
+	return cli.Output{Text: out, ExitCode: 0}, nil
 }
 
 // collectSymbols loads the package, discovers every top-level symbol

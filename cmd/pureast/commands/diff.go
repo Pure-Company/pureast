@@ -35,7 +35,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
-	"github.com/vinodhalaharvi/purekernels/pkg/result"
 )
 
 type DiffArgs struct {
@@ -77,12 +76,12 @@ Examples:
 	return cmd
 }
 
-func parseDiffArgs(cmd *cobra.Command, args []string) result.Result[DiffArgs] {
+func parseDiffArgs(cmd *cobra.Command, args []string) (DiffArgs, error) {
 	if len(args) < 1 {
-		return result.Err[DiffArgs](fmt.Errorf("requires REF [PATH]"))
+		return DiffArgs{}, fmt.Errorf("requires REF [PATH]")
 	}
 	if len(args) > 2 {
-		return result.Err[DiffArgs](fmt.Errorf("expected REF [PATH], got %d args", len(args)))
+		return DiffArgs{}, fmt.Errorf("expected REF [PATH], got %d args", len(args))
 	}
 
 	ref := args[0]
@@ -98,11 +97,11 @@ func parseDiffArgs(cmd *cobra.Command, args []string) result.Result[DiffArgs] {
 	wholeFile, _ := cmd.Flags().GetBool("whole-file")
 
 	if format != "go" && format != "md" {
-		return result.Err[DiffArgs](fmt.Errorf(
-			"invalid --format %q (want: go|md)", format))
+		return DiffArgs{}, fmt.Errorf(
+			"invalid --format %q (want: go|md)", format)
 	}
 
-	return result.Ok(DiffArgs{
+	return DiffArgs{
 		FilePath:   path,
 		Ref:        ref,
 		OutputFile: output,
@@ -110,22 +109,19 @@ func parseDiffArgs(cmd *cobra.Command, args []string) result.Result[DiffArgs] {
 		Bodies:     bodies,
 		MaxTokens:  maxTokens,
 		WholeFile:  wholeFile,
-	})
+	}, nil
 }
 
-func diffAction(ctx context.Context, args DiffArgs) result.Result[cli.Output] {
+func diffAction(ctx context.Context, args DiffArgs) (cli.Output, error) {
 	changed, err := changedGoFiles(ctx, args.Ref, args.FilePath)
 	if err != nil {
-		return result.Ok(cli.Output{
-			Text:     fmt.Sprintf("Error: %v\n", err),
-			ExitCode: 1,
-		})
+		return cli.Output{}, err
 	}
 	if len(changed) == 0 {
-		return result.Ok(cli.Output{
+		return cli.Output{
 			Text:     fmt.Sprintf("No Go files changed since %s.\n", args.Ref),
 			ExitCode: 0,
-		})
+		}, nil
 	}
 
 	// By default we filter symbols to those whose line range actually
@@ -149,10 +145,7 @@ func diffAction(ctx context.Context, args DiffArgs) result.Result[cli.Output] {
 
 	symbols, pkgName, err := collectSymbolsFromFiles(changed, args.Bodies, hunks)
 	if err != nil {
-		return result.Ok(cli.Output{
-			Text:     fmt.Sprintf("Error: %v\n", err),
-			ExitCode: 1,
-		})
+		return cli.Output{}, fmt.Errorf("collect symbols: %w", err)
 	}
 
 	out := renderDiffOutput(pkgName, args.Ref, changed, symbols, args.Bodies)
@@ -172,18 +165,15 @@ func diffAction(ctx context.Context, args DiffArgs) result.Result[cli.Output] {
 
 	if args.OutputFile != "" {
 		if err := os.WriteFile(args.OutputFile, []byte(out), 0644); err != nil {
-			return result.Ok(cli.Output{
-				Text:     fmt.Sprintf("Error writing file: %v\n", err),
-				ExitCode: 1,
-			})
+			return cli.Output{}, fmt.Errorf("write %s: %w", args.OutputFile, err)
 		}
-		return result.Ok(cli.Output{
+		return cli.Output{
 			Text:     fmt.Sprintf("✓ Written to %s\n", args.OutputFile),
 			ExitCode: 0,
-		})
+		}, nil
 	}
 
-	return result.Ok(cli.Output{Text: out, ExitCode: 0})
+	return cli.Output{Text: out, ExitCode: 0}, nil
 }
 
 // changedGoFiles asks git which files differ between ref and HEAD,

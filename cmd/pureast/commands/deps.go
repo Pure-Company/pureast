@@ -23,7 +23,6 @@ import (
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
 	"github.com/vinodhalaharvi/pureast/pkg/codegen"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
-	"github.com/vinodhalaharvi/purekernels/pkg/result"
 )
 
 type DepsArgs struct {
@@ -70,18 +69,18 @@ Examples:
 	return cmd
 }
 
-func parseDepsArgs(cmd *cobra.Command, args []string) result.Result[DepsArgs] {
+func parseDepsArgs(cmd *cobra.Command, args []string) (DepsArgs, error) {
 	if len(args) < 1 {
-		return result.Err[DepsArgs](fmt.Errorf("requires SYMBOL [PATH]"))
+		return DepsArgs{}, fmt.Errorf("requires SYMBOL [PATH]")
 	}
 	if len(args) > 2 {
-		return result.Err[DepsArgs](fmt.Errorf("expected SYMBOL [PATH], got %d args", len(args)))
+		return DepsArgs{}, fmt.Errorf("expected SYMBOL [PATH], got %d args", len(args))
 	}
 
 	symbol := args[0]
 	path, err := resolvePathFromTail(cmd, args[1:])
 	if err != nil {
-		return result.Err[DepsArgs](err)
+		return DepsArgs{}, err
 	}
 
 	format, _ := cmd.Flags().GetString("format")
@@ -93,8 +92,8 @@ func parseDepsArgs(cmd *cobra.Command, args []string) result.Result[DepsArgs] {
 	switch format {
 	case "text", "dot", "json":
 	default:
-		return result.Err[DepsArgs](fmt.Errorf(
-			"invalid --format %q (want: text|dot|json)", format))
+		return DepsArgs{}, fmt.Errorf(
+			"invalid --format %q (want: text|dot|json)", format)
 	}
 
 	// --minimal and --depth are two ways of saying "less expansion".
@@ -102,11 +101,11 @@ func parseDepsArgs(cmd *cobra.Command, args []string) result.Result[DepsArgs] {
 	// the combination — explicit beats implicit, in the spirit of
 	// "no redundant paths."
 	if minimal && depth >= 0 {
-		return result.Err[DepsArgs](fmt.Errorf(
-			"--minimal and --depth are mutually exclusive"))
+		return DepsArgs{}, fmt.Errorf(
+			"--minimal and --depth are mutually exclusive")
 	}
 
-	return result.Ok(DepsArgs{
+	return DepsArgs{
 		FilePath:  path,
 		Symbol:    symbol,
 		Format:    format,
@@ -114,17 +113,14 @@ func parseDepsArgs(cmd *cobra.Command, args []string) result.Result[DepsArgs] {
 		Depth:     depth,
 		Reverse:   reverse,
 		Locations: locations,
-	})
+	}, nil
 }
 
-func depsAction(ctx context.Context, args DepsArgs) result.Result[cli.Output] {
+func depsAction(ctx context.Context, args DepsArgs) (cli.Output, error) {
 	fset := token.NewFileSet()
 	pkgNode, err := extract.ExtractDirectoryConcurrent(fset, args.FilePath, true, 0)
 	if err != nil {
-		return result.Ok(cli.Output{
-			Text:     fmt.Sprintf("Error: %v\n", err),
-			ExitCode: 1,
-		})
+		return cli.Output{}, fmt.Errorf("extract %s: %w", args.FilePath, err)
 	}
 
 	declMap := extract.BuildPackageDeclMap(pkgNode)
@@ -156,10 +152,10 @@ func depsAction(ctx context.Context, args DepsArgs) result.Result[cli.Output] {
 		// the text/json paths for now. Note this in a comment so
 		// we don't pretend we silently support it.
 		gen := codegen.NewGenerator(fset)
-		return result.Ok(cli.Output{
+		return cli.Output{
 			Text:     gen.GenerateDOT(args.Symbol, declMap),
 			ExitCode: 0,
-		})
+		}, nil
 
 	case "json":
 		// Locations are emitted for --reverse (where they're most useful —
@@ -167,10 +163,10 @@ func depsAction(ctx context.Context, args DepsArgs) result.Result[cli.Output] {
 		// --locations. The two together cover the cases where file:line
 		// adds value without changing default forward output.
 		withLocations := args.Reverse || args.Locations
-		return result.Ok(cli.Output{
+		return cli.Output{
 			Text:     formatDepsJSON(args.Symbol, deps, withLocations, fset, declMap, args.FilePath),
 			ExitCode: 0,
-		})
+		}, nil
 
 	default: // text
 		header := "Dependencies for " + args.Symbol + ":"
@@ -194,7 +190,7 @@ func depsAction(ctx context.Context, args DepsArgs) result.Result[cli.Output] {
 			stats := graph.ComputeStats(args.Symbol)
 			out += fmt.Sprintf("\nMax Depth: %d\n", stats.MaxDepth)
 		}
-		return result.Ok(cli.Output{Text: out, ExitCode: 0})
+		return cli.Output{Text: out, ExitCode: 0}, nil
 	}
 }
 
