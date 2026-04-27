@@ -275,7 +275,7 @@ func collectSymbolsFromFiles(paths []string, includeBodies bool, hunks map[strin
 			Line:     startPos.Line,
 		}
 		ds.Source = renderSymbolSource(fset, s, includeBodies)
-		ds.Doc = extractSymbolDoc(s.Decl)
+		ds.Doc = extract.SymbolDoc(s.Decl)
 		dumped = append(dumped, ds)
 	}
 

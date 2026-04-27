@@ -6,11 +6,7 @@
 package commands
 
 import (
-	"bytes"
 	"fmt"
-	"go/ast"
-	"go/printer"
-	"go/token"
 	"os"
 	"strings"
 
@@ -58,24 +54,11 @@ func resolvePathFlag(cmd *cobra.Command) (string, error) {
 	return ".", nil
 }
 
-// estimateTokens, truncateToBudget, truncateSymbols live in pkg/extract/budget.go
-// — see that file for the canonical implementations. This package only
-// re-exports them as thin wrappers for backward-compat with the callers
-// inside cmd/pureast/commands/.
-
-// printNode renders a Go AST node back to source via go/printer.
-// Used for --bodies mode: the placeholder approach in the previous
-// patch was a stub; this is the real thing.
-func printNode(fset *token.FileSet, node ast.Node) string {
-	var buf bytes.Buffer
-	cfg := printer.Config{Mode: printer.UseSpaces | printer.TabIndent, Tabwidth: 8}
-	if err := cfg.Fprint(&buf, fset, node); err != nil {
-		// Printer errors are essentially never seen on well-formed AST
-		// nodes from go/parser. Fall back to a marker rather than fail.
-		return fmt.Sprintf("/* printer error: %v */", err)
-	}
-	return buf.String()
-}
+// Token-budget helpers live in pkg/extract/budget.go.
+// AST rendering helpers (printNode, RenderSignature, RenderWithBody,
+// SymbolDoc) live in pkg/extract/render.go. Both packages are imported
+// by callers inside cmd/pureast/commands/ — see dump.go, extract.go,
+// types.go.
 
 // renderAsMarkdown wraps Go output in a fenced code block with a
 // header. For the LLM-context use case markdown often parses better

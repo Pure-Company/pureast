@@ -19,7 +19,7 @@ package mcp
 
 import (
 	"fmt"
-	"sort"
+	"go/token"
 	"strings"
 
 	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
@@ -45,7 +45,13 @@ type dumpRenderOptions struct {
 // by kind, sorted alphabetically within each section. Determinism matters
 // here for prompt caching — the same package must render identically
 // across calls so the cached prefix hits.
-func renderDumpForMCP(pkg astpkg.PackageNode, opts dumpRenderOptions) string {
+//
+// As of the renderer-consolidation patch, this emits real Go signatures
+// (via extract.RenderSignature) rather than the bare "name (kind)"
+// tuples it used to produce. The CLI and MCP now share the same
+// signature renderer through pkg/extract — bug fixes and new kinds
+// land in both with one change.
+func renderDumpForMCP(fset *token.FileSet, pkg astpkg.PackageNode, opts dumpRenderOptions) string {
 	symbols := extract.DiscoverAllSymbols(pkg)
 
 	// Filter by kind if requested. extract.FilterByKind handles unknown
@@ -60,7 +66,7 @@ func renderDumpForMCP(pkg astpkg.PackageNode, opts dumpRenderOptions) string {
 		symbols = filterExported(symbols)
 	}
 
-	body := renderSymbolSections(pkg.Name, symbols)
+	body := renderSymbolSections(fset, pkg.Name, symbols)
 
 	if opts.MaxTokens > 0 {
 		// Symbol-aware truncation keeps the dump syntactically complete
@@ -93,49 +99,49 @@ func filterExported(symbols []extract.SymbolInfo) []extract.SymbolInfo {
 }
 
 // renderSymbolSections groups symbols by kind and renders each section
-// with a header. The kind order here is deliberate: types first (the
-// vocabulary), then funcs/methods (the verbs), then values (the constants
-// the LLM is least likely to need). An LLM reading top-to-bottom builds
-// the right mental model.
-func renderSymbolSections(pkgName string, symbols []extract.SymbolInfo) string {
-	groups := map[string][]extract.SymbolInfo{}
-	for _, s := range symbols {
-		groups[s.Kind] = append(groups[s.Kind], s)
-	}
-
-	for k := range groups {
-		sort.Slice(groups[k], func(i, j int) bool {
-			return groups[k][i].Name < groups[k][j].Name
-		})
-	}
+// with a header, followed by per-symbol Go signatures via the shared
+// extract.RenderSignature path. The kind order, headings, and grouping
+// logic come from extract.KindOrder/KindHeadings/GroupSymbolsForDump
+// so a new kind only needs to be added in one place.
+func renderSymbolSections(fset *token.FileSet, pkgName string, symbols []extract.SymbolInfo) string {
+	groups := extract.GroupSymbolsForDump(symbols)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "// pureast dump: package %s\n", pkgName)
 	fmt.Fprintf(&b, "// %d symbols\n\n", len(symbols))
 
-	order := []string{"struct", "interface", "type", "function", "method", "const", "var"}
-	headings := map[string]string{
-		"struct":    "// === structs ===",
-		"interface": "// === interfaces ===",
-		"type":      "// === type aliases ===",
-		"function":  "// === functions ===",
-		"method":    "// === methods ===",
-		"const":     "// === constants ===",
-		"var":       "// === variables ===",
-	}
-
-	for _, kind := range order {
+	for _, kind := range extract.KindOrder {
 		ss := groups[kind]
 		if len(ss) == 0 {
 			continue
 		}
-		b.WriteString(headings[kind])
-		b.WriteString("\n")
+		b.WriteString(extract.KindHeadings[kind])
+		b.WriteString("\n\n")
 		for _, s := range ss {
-			if s.Receiver != "" {
-				fmt.Fprintf(&b, "  %s.%s (%s)\n", s.Receiver, s.Name, s.Kind)
+			// Documentation comment, if present, on its own preceding
+			// line(s). Matches the CLI dump's emission style so a
+			// caller comparing the two outputs sees identical shape.
+			if doc := extract.SymbolDoc(s.Decl); doc != "" {
+				for _, line := range strings.Split(strings.TrimRight(doc, "\n"), "\n") {
+					b.WriteString("// ")
+					b.WriteString(line)
+					b.WriteString("\n")
+				}
+			}
+			sig := extract.RenderSignature(fset, s)
+			if sig == "" {
+				// Fall back to the old "name (kind)" line when we
+				// can't produce a signature (synthesized symbols,
+				// unrecognized decl shapes). Keeps every symbol
+				// present in the output rather than silently dropped.
+				if s.Receiver != "" {
+					fmt.Fprintf(&b, "  %s.%s (%s)\n", s.Receiver, s.Name, s.Kind)
+				} else {
+					fmt.Fprintf(&b, "  %s (%s)\n", s.Name, s.Kind)
+				}
 			} else {
-				fmt.Fprintf(&b, "  %s (%s)\n", s.Name, s.Kind)
+				b.WriteString(sig)
+				b.WriteString("\n")
 			}
 		}
 		b.WriteString("\n")

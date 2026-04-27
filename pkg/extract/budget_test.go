@@ -13,9 +13,9 @@ func TestEstimateTokens(t *testing.T) {
 		want int // approximate; we assert ranges, not exact values
 	}{
 		{"empty", "", 0},
-		{"short", "hello", 2},                      // 5 chars * 2 + 6 = 16; 16/7 = 2
-		{"sentence", "the quick brown fox", 6},     // 19*2 + 6 = 44; 44/7 = 6
-		{"newlines counted", "a\nb\nc\nd", 2},      // 7*2 + 6 = 20; 20/7 = 2
+		{"short", "hello", 2},                  // 5 chars * 2 + 6 = 16; 16/7 = 2
+		{"sentence", "the quick brown fox", 6}, // 19*2 + 6 = 44; 44/7 = 6
+		{"newlines counted", "a\nb\nc\nd", 2},  // 7*2 + 6 = 20; 20/7 = 2
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

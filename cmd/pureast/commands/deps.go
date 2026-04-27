@@ -18,8 +18,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
 	"github.com/vinodhalaharvi/pureast/pkg/analyze"
+	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
 	"github.com/vinodhalaharvi/pureast/pkg/codegen"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
@@ -242,7 +242,7 @@ func formatDepsJSON(symbol string, deps astpkg.Dependencies, withLocations bool,
 	// Imports stay as plain strings — they don't have a position in
 	// our package's source.
 	payload := struct {
-		Symbol     string         `json:"symbol"`
+		Symbol     string          `json:"symbol"`
 		Types      []symbolWithLoc `json:"types"`
 		Functions  []symbolWithLoc `json:"functions"`
 		Structs    []symbolWithLoc `json:"structs"`

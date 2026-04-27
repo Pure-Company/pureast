@@ -162,9 +162,9 @@ func TestFormatDepsJSON_SortedAlphabetically(t *testing.T) {
 	out := formatDepsJSON("Profile", deps, false, fset, declMap, ".")
 
 	var parsed struct {
-		Functions  []string `json:"functions"`
-		Types      []string `json:"types"`
-		Structs    []string `json:"structs"`
+		Functions []string `json:"functions"`
+		Types     []string `json:"types"`
+		Structs   []string `json:"structs"`
 	}
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatal(err)

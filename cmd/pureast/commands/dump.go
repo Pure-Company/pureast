@@ -233,7 +233,7 @@ func collectSymbols(args DumpArgs) ([]dumpedSymbol, string, error) {
 		}
 		ds.Source = renderSymbolSource(fset, s, args.Bodies)
 		if args.IncludeDocs {
-			ds.Doc = extractSymbolDoc(s.Decl)
+			ds.Doc = extract.SymbolDoc(s.Decl)
 		}
 		dumped = append(dumped, ds)
 	}
@@ -273,69 +273,21 @@ func declInTestFile(fset *token.FileSet, decl ast.Decl) bool {
 	return strings.HasSuffix(pos.Filename, "_test.go")
 }
 
-// extractSymbolDoc returns the documentation comment text attached to
-// the declaration, if any. GenDecl carries the doc on the spec when
-// the spec is the only one in the block, on the GenDecl otherwise.
-// FuncDecl always has it directly.
-func extractSymbolDoc(decl ast.Decl) string {
-	switch d := decl.(type) {
-	case *ast.FuncDecl:
-		if d.Doc != nil {
-			return d.Doc.Text()
-		}
-	case *ast.GenDecl:
-		if d.Doc != nil {
-			return d.Doc.Text()
-		}
-		if len(d.Specs) > 0 {
-			switch s := d.Specs[0].(type) {
-			case *ast.TypeSpec:
-				if s.Doc != nil {
-					return s.Doc.Text()
-				}
-			case *ast.ValueSpec:
-				if s.Doc != nil {
-					return s.Doc.Text()
-				}
-			}
-		}
-	}
-	return ""
-}
-
 // renderSymbolSource produces the per-symbol body text the dump verb
-// emits. For funcs/methods we go through go/printer when --bodies is
-// on (real implementation) or reconstruct the signature manually when
-// it's off. For types we render a compact "type X struct {...}" form;
-// for consts/vars a one-liner.
+// emits. Delegates to pkg/extract — the actual rendering logic lives
+// there now so MCP can use the same code. The local wrapper exists
+// so the body switch (signature vs full source) reads naturally at
+// the call site.
 func renderSymbolSource(fset *token.FileSet, s extract.SymbolInfo, includeBody bool) string {
 	if s.Decl == nil {
 		// Defensive: should not happen, but emit something tractable
 		// rather than panic on a malformed input.
 		return s.Kind + " " + s.Name
 	}
-	switch d := s.Decl.(type) {
-	case *ast.FuncDecl:
-		return renderFuncDecl(fset, d, includeBody)
-	case *ast.GenDecl:
-		if len(d.Specs) == 0 {
-			return ""
-		}
-		switch spec := d.Specs[0].(type) {
-		case *ast.TypeSpec:
-			return renderTypeSpec(spec)
-		case *ast.ValueSpec:
-			kind := "var"
-			if d.Tok == token.CONST {
-				kind = "const"
-			}
-			// ValueSpecs can declare multiple names in one decl
-			// (var a, b int = 1, 2). For dump purposes we render
-			// just the requested name's slice of the spec.
-			return renderValueSpec(kind, s.Name, spec)
-		}
+	if includeBody {
+		return extract.RenderWithBody(fset, s)
 	}
-	return ""
+	return extract.RenderSignature(fset, s)
 }
 
 func kindAllowed(filter, kind string) bool {
@@ -350,174 +302,6 @@ func kindAllowed(filter, kind string) bool {
 		return true
 	}
 	return false
-}
-
-func renderFuncDecl(fset *token.FileSet, d *ast.FuncDecl, includeBody bool) string {
-	// When bodies are requested, hand the whole declaration to go/printer.
-	// Manual reconstruction (used for signature mode) loses comments,
-	// blank lines, and formatting nuance — fine for compact output, but
-	// wrong when the user explicitly asked for the implementation.
-	if includeBody && d.Body != nil {
-		return printNode(fset, d)
-	}
-
-	var b strings.Builder
-	if d.Recv != nil {
-		b.WriteString("func ")
-		b.WriteString(renderFieldList(d.Recv))
-		b.WriteString(" ")
-		b.WriteString(d.Name.Name)
-	} else {
-		b.WriteString("func ")
-		b.WriteString(d.Name.Name)
-	}
-	b.WriteString(renderParams(d.Type.Params))
-	if d.Type.Results != nil && len(d.Type.Results.List) > 0 {
-		b.WriteString(" ")
-		b.WriteString(renderResults(d.Type.Results))
-	}
-	return b.String()
-}
-
-func renderTypeSpec(s *ast.TypeSpec) string {
-	return "type " + s.Name.Name + " " + renderTypeExpr(s.Type)
-}
-
-func renderValueSpec(kind, name string, s *ast.ValueSpec) string {
-	var b strings.Builder
-	b.WriteString(kind)
-	b.WriteString(" ")
-	b.WriteString(name)
-	if s.Type != nil {
-		b.WriteString(" ")
-		b.WriteString(renderTypeExpr(s.Type))
-	}
-	return b.String()
-}
-
-func renderFieldList(fl *ast.FieldList) string {
-	if fl == nil || len(fl.List) == 0 {
-		return "()"
-	}
-	var parts []string
-	for _, f := range fl.List {
-		t := renderTypeExpr(f.Type)
-		if len(f.Names) == 0 {
-			parts = append(parts, t)
-			continue
-		}
-		var names []string
-		for _, n := range f.Names {
-			names = append(names, n.Name)
-		}
-		parts = append(parts, strings.Join(names, ", ")+" "+t)
-	}
-	return "(" + strings.Join(parts, ", ") + ")"
-}
-
-func renderParams(fl *ast.FieldList) string {
-	return renderFieldList(fl)
-}
-
-func renderResults(fl *ast.FieldList) string {
-	if fl == nil || len(fl.List) == 0 {
-		return ""
-	}
-	// Single unnamed result -> no parens
-	if len(fl.List) == 1 && len(fl.List[0].Names) == 0 {
-		return renderTypeExpr(fl.List[0].Type)
-	}
-	return renderFieldList(fl)
-}
-
-func renderTypeExpr(expr ast.Expr) string {
-	switch t := expr.(type) {
-	case *ast.Ident:
-		return t.Name
-	case *ast.SelectorExpr:
-		return renderTypeExpr(t.X) + "." + t.Sel.Name
-	case *ast.StarExpr:
-		return "*" + renderTypeExpr(t.X)
-	case *ast.ArrayType:
-		return "[]" + renderTypeExpr(t.Elt)
-	case *ast.MapType:
-		return "map[" + renderTypeExpr(t.Key) + "]" + renderTypeExpr(t.Value)
-	case *ast.ChanType:
-		return "chan " + renderTypeExpr(t.Value)
-	case *ast.FuncType:
-		return "func" + renderFieldList(t.Params) + " " + renderFieldList(t.Results)
-	case *ast.InterfaceType:
-		return renderInterfaceShort(t)
-	case *ast.StructType:
-		return renderStructShort(t)
-	case *ast.IndexExpr:
-		return renderTypeExpr(t.X) + "[" + renderTypeExpr(t.Index) + "]"
-	case *ast.IndexListExpr:
-		var ps []string
-		for _, idx := range t.Indices {
-			ps = append(ps, renderTypeExpr(idx))
-		}
-		return renderTypeExpr(t.X) + "[" + strings.Join(ps, ", ") + "]"
-	case *ast.Ellipsis:
-		return "..." + renderTypeExpr(t.Elt)
-	default:
-		return "?"
-	}
-}
-
-func renderStructShort(s *ast.StructType) string {
-	if s.Fields == nil || len(s.Fields.List) == 0 {
-		return "struct{}"
-	}
-	var lines []string
-	for _, f := range s.Fields.List {
-		t := renderTypeExpr(f.Type)
-		if len(f.Names) == 0 {
-			lines = append(lines, "  "+t)
-			continue
-		}
-		var names []string
-		for _, n := range f.Names {
-			names = append(names, n.Name)
-		}
-		lines = append(lines, "  "+strings.Join(names, ", ")+" "+t)
-	}
-	return "struct {\n" + strings.Join(lines, "\n") + "\n}"
-}
-
-func renderInterfaceShort(i *ast.InterfaceType) string {
-	if i.Methods == nil || len(i.Methods.List) == 0 {
-		return "interface{}"
-	}
-	var lines []string
-	for _, m := range i.Methods.List {
-		if len(m.Names) == 0 {
-			// embedded interface
-			lines = append(lines, "  "+renderTypeExpr(m.Type))
-			continue
-		}
-		// method
-		fn, ok := m.Type.(*ast.FuncType)
-		if !ok {
-			continue
-		}
-		sig := m.Names[0].Name + renderFieldList(fn.Params)
-		if fn.Results != nil && len(fn.Results.List) > 0 {
-			sig += " " + renderResults(fn.Results)
-		}
-		lines = append(lines, "  "+sig)
-	}
-	return "interface {\n" + strings.Join(lines, "\n") + "\n}"
-}
-
-func combineDoc(a, b *ast.CommentGroup) string {
-	switch {
-	case a != nil && a.Text() != "":
-		return a.Text()
-	case b != nil && b.Text() != "":
-		return b.Text()
-	}
-	return ""
 }
 
 func renderDump(pkgName string, symbols []dumpedSymbol, args DumpArgs) string {

@@ -68,7 +68,7 @@ func (te *ToolExecutor) DumpPackageHandler() Handler {
 				}
 				pkgNode := pkgResult.Unwrap()
 
-				text := renderDumpForMCP(pkgNode, dumpRenderOptions{
+				text := renderDumpForMCP(fset, pkgNode, dumpRenderOptions{
 					Kind:         params.Arguments.Kind,
 					ExportedOnly: params.Arguments.ExportedOnly,
 					Format:       params.Arguments.Format,
@@ -192,7 +192,7 @@ func (te *ToolExecutor) DiffSinceHandler() Handler {
 					return ErrorResponse(req.ID, InternalError, err.Error())
 				}
 
-				text := renderDumpForMCP(pkgNode, dumpRenderOptions{
+				text := renderDumpForMCP(fset, pkgNode, dumpRenderOptions{
 					Format:    params.Arguments.Format,
 					MaxTokens: params.Arguments.MaxTokens,
 				})

@@ -30,8 +30,8 @@ func TestFuzzySearch_ExactMatchTop(t *testing.T) {
 
 func TestFuzzySearch_PrefixBeatsContains(t *testing.T) {
 	syms := []SymbolInfo{
-		mkSym("HandleRequest", "function"),  // contains
-		mkSym("HandlerFunc", "function"),    // prefix
+		mkSym("HandleRequest", "function"), // contains
+		mkSym("HandlerFunc", "function"),   // prefix
 	}
 
 	got := FuzzySearch(syms, "Handle", "", 0)
@@ -51,10 +51,10 @@ func TestFuzzySearch_ScoreOrder(t *testing.T) {
 	// All five strategies in one query, asserting the documented score
 	// ordering: exact > prefix > contains > subsequence > initials.
 	syms := []SymbolInfo{
-		mkSym("Bar", "struct"),                // initials match for "B"? No, "B" alone matches as exact-prefix
-		mkSym("FooBar", "struct"),             // contains "Bar"
-		mkSym("Bar", "function"),              // exact "Bar"
-		mkSym("BackToReality", "struct"),      // initials BTR — "B" matches
+		mkSym("Bar", "struct"),           // initials match for "B"? No, "B" alone matches as exact-prefix
+		mkSym("FooBar", "struct"),        // contains "Bar"
+		mkSym("Bar", "function"),         // exact "Bar"
+		mkSym("BackToReality", "struct"), // initials BTR — "B" matches
 	}
 
 	// Use pattern "Bar" — should match Bar exact, FooBar contains, no others
