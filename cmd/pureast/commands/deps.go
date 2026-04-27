@@ -13,11 +13,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/token"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/vinodhalaharvi/pureast/pkg/analyze"
 	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
+	"github.com/vinodhalaharvi/pureast/pkg/analyze"
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
 	"github.com/vinodhalaharvi/pureast/pkg/codegen"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
@@ -147,7 +149,7 @@ func depsAction(ctx context.Context, args DepsArgs) result.Result[cli.Output] {
 
 	case "json":
 		return result.Ok(cli.Output{
-			Text:     formatDepsJSON(args.Symbol, deps),
+			Text:     formatDepsJSON(args.Symbol, deps, args.Reverse, fset, declMap, args.FilePath),
 			ExitCode: 0,
 		})
 
@@ -156,7 +158,16 @@ func depsAction(ctx context.Context, args DepsArgs) result.Result[cli.Output] {
 		if args.Reverse {
 			header = "Reverse dependencies (users) of " + args.Symbol + ":"
 		}
-		out := header + "\n\n" + analyze.FormatDependencies(args.Symbol, deps)
+		var out string
+		if args.Reverse {
+			// For reverse deps, file:line is the headline information —
+			// "who calls X" is most useful when you can jump straight to
+			// each caller. Render with locations rather than going
+			// through analyze.FormatDependencies (which only knows names).
+			out = header + "\n\n" + formatDepsWithLocations(deps, fset, declMap, args.FilePath)
+		} else {
+			out = header + "\n\n" + analyze.FormatDependencies(args.Symbol, deps)
+		}
 		if !args.Reverse && args.Depth < 0 && !args.Minimal {
 			// Stats only make sense for the unbounded forward query —
 			// for bounded or reverse queries the numbers don't refer
@@ -186,36 +197,159 @@ func selectDeps(g analyze.DependencyGraph, args DepsArgs) astpkg.Dependencies {
 }
 
 // formatDepsJSON renders dependencies as a stable, structured JSON document.
-// We expose the fields a downstream tool actually wants: the symbol being
-// analyzed, plus sorted lists of related symbol names by category.
-// Stable ordering (alphabetical within each list) is essential for LLM
-// caching — identical input must produce byte-identical output.
-func formatDepsJSON(symbol string, deps astpkg.Dependencies) string {
-	payload := struct {
-		Symbol     string   `json:"symbol"`
-		Types      []string `json:"types"`
-		Functions  []string `json:"functions"`
-		Structs    []string `json:"structs"`
-		Interfaces []string `json:"interfaces"`
-		Constants  []string `json:"constants"`
-		Variables  []string `json:"variables"`
-		Imports    []string `json:"imports"`
-	}{
-		Symbol:     symbol,
-		Types:      sortedSlice(deps.Types.ToSlice()),
-		Functions:  sortedSlice(deps.Functions.ToSlice()),
-		Structs:    sortedSlice(deps.Structs.ToSlice()),
-		Interfaces: sortedSlice(deps.Interfaces.ToSlice()),
-		Constants:  sortedSlice(deps.Constants.ToSlice()),
-		Variables:  sortedSlice(deps.Variables.ToSlice()),
-		Imports:    sortedSlice(deps.Imports.ToSlice()),
+// When withLocations is true (typically for --reverse), each entry becomes
+// an object with name + file + line instead of a bare string. Stable
+// ordering (alphabetical) is essential for LLM caching — identical input
+// must produce byte-identical output.
+func formatDepsJSON(symbol string, deps astpkg.Dependencies, withLocations bool, fset *token.FileSet, declMap map[string]astpkg.DeclNode, basePath string) string {
+	if !withLocations {
+		// Original flat-string shape preserved for forward-deps callers
+		// that already parse this format.
+		payload := struct {
+			Symbol     string   `json:"symbol"`
+			Types      []string `json:"types"`
+			Functions  []string `json:"functions"`
+			Structs    []string `json:"structs"`
+			Interfaces []string `json:"interfaces"`
+			Constants  []string `json:"constants"`
+			Variables  []string `json:"variables"`
+			Imports    []string `json:"imports"`
+		}{
+			Symbol:     symbol,
+			Types:      sortedSlice(deps.Types.ToSlice()),
+			Functions:  sortedSlice(deps.Functions.ToSlice()),
+			Structs:    sortedSlice(deps.Structs.ToSlice()),
+			Interfaces: sortedSlice(deps.Interfaces.ToSlice()),
+			Constants:  sortedSlice(deps.Constants.ToSlice()),
+			Variables:  sortedSlice(deps.Variables.ToSlice()),
+			Imports:    sortedSlice(deps.Imports.ToSlice()),
+		}
+		out, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return fmt.Sprintf(`{"symbol":%q,"error":%q}`+"\n", symbol, err.Error())
+		}
+		return string(out) + "\n"
 	}
 
+	// With-locations variant: each name expands into {name, file, line}.
+	// Imports stay as plain strings — they don't have a position in
+	// our package's source.
+	payload := struct {
+		Symbol     string         `json:"symbol"`
+		Types      []symbolWithLoc `json:"types"`
+		Functions  []symbolWithLoc `json:"functions"`
+		Structs    []symbolWithLoc `json:"structs"`
+		Interfaces []symbolWithLoc `json:"interfaces"`
+		Constants  []symbolWithLoc `json:"constants"`
+		Variables  []symbolWithLoc `json:"variables"`
+		Imports    []string        `json:"imports"`
+	}{
+		Symbol:     symbol,
+		Types:      withLoc(deps.Types.ToSlice(), fset, declMap, basePath),
+		Functions:  withLoc(deps.Functions.ToSlice(), fset, declMap, basePath),
+		Structs:    withLoc(deps.Structs.ToSlice(), fset, declMap, basePath),
+		Interfaces: withLoc(deps.Interfaces.ToSlice(), fset, declMap, basePath),
+		Constants:  withLoc(deps.Constants.ToSlice(), fset, declMap, basePath),
+		Variables:  withLoc(deps.Variables.ToSlice(), fset, declMap, basePath),
+		Imports:    sortedSlice(deps.Imports.ToSlice()),
+	}
 	out, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return fmt.Sprintf(`{"symbol":%q,"error":%q}`+"\n", symbol, err.Error())
 	}
 	return string(out) + "\n"
+}
+
+type symbolWithLoc struct {
+	Name string `json:"name"`
+	File string `json:"file,omitempty"`
+	Line int    `json:"line,omitempty"`
+}
+
+// withLoc looks up file:line for each name in declMap. Names with no
+// matching declaration (e.g. cross-package references) are kept with
+// empty file/line — better to show the name than drop the entry.
+func withLoc(names []string, fset *token.FileSet, declMap map[string]astpkg.DeclNode, basePath string) []symbolWithLoc {
+	sort.Strings(names)
+	out := make([]symbolWithLoc, 0, len(names))
+	for _, n := range names {
+		entry := symbolWithLoc{Name: n}
+		if decl, ok := declMap[n]; ok && decl.Decl != nil {
+			pos := fset.Position(decl.Decl.Pos())
+			entry.File = relativizePath(pos.Filename, basePath)
+			entry.Line = pos.Line
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// formatDepsWithLocations renders Dependencies as text with a "name
+// (file:line)" suffix on every entry that we can resolve. Names from
+// outside the analyzed package (declMap miss) are rendered without the
+// suffix rather than dropped — the user still wants to see them.
+func formatDepsWithLocations(deps astpkg.Dependencies, fset *token.FileSet, declMap map[string]astpkg.DeclNode, basePath string) string {
+	var b strings.Builder
+
+	emit := func(label string, names []string) {
+		if len(names) == 0 {
+			return
+		}
+		sort.Strings(names)
+		fmt.Fprintf(&b, "%s (%d):\n", label, len(names))
+		for _, n := range names {
+			if decl, ok := declMap[n]; ok && decl.Decl != nil {
+				pos := fset.Position(decl.Decl.Pos())
+				rel := relativizePath(pos.Filename, basePath)
+				fmt.Fprintf(&b, "  - %s  (%s:%d)\n", n, rel, pos.Line)
+			} else {
+				fmt.Fprintf(&b, "  - %s\n", n)
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	emit("Types", deps.Types.ToSlice())
+	emit("Functions", deps.Functions.ToSlice())
+	emit("Structs", deps.Structs.ToSlice())
+	emit("Interfaces", deps.Interfaces.ToSlice())
+	emit("Constants", deps.Constants.ToSlice())
+	emit("Variables", deps.Variables.ToSlice())
+
+	if len(deps.Imports.ToSlice()) > 0 {
+		emit("Imports", deps.Imports.ToSlice())
+	}
+
+	if b.Len() == 0 {
+		return "(no dependencies found)\n"
+	}
+	return b.String()
+}
+
+// relativizePath converts an absolute filename returned by fset.Position
+// into a path relative to the directory the user passed on the command
+// line. We try filepath.Rel; if it fails (different volumes, etc.) or
+// produces something with .. that's longer than the absolute, we fall
+// back to the absolute path. Either is correct, but the relative form
+// is dramatically nicer at the terminal.
+func relativizePath(absPath, basePath string) string {
+	if absPath == "" {
+		return ""
+	}
+	absBase, err := filepath.Abs(basePath)
+	if err != nil {
+		return absPath
+	}
+	rel, err := filepath.Rel(absBase, absPath)
+	if err != nil {
+		return absPath
+	}
+	// Don't return "../../../home/..." style traversal — if relativizing
+	// makes the path longer or escapes the base, keep absolute.
+	if strings.HasPrefix(rel, "..") {
+		return absPath
+	}
+	return rel
 }
 
 func sortedSlice(in []string) []string {

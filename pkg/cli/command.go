@@ -3,6 +3,9 @@ package cli
 
 import (
     "context"
+    "fmt"
+    "os"
+
     "github.com/spf13/cobra"
     "github.com/vinodhalaharvi/purekernels/pkg/result"
 )
@@ -56,15 +59,24 @@ func (b *CommandBuilder[A]) Build() *cobra.Command {
 
             ctx := cmd.Context()
             outputResult := b.action(ctx, argsResult.Unwrap())
-            
+
             if !outputResult.IsOk() {
                 return outputResult.Error()
             }
 
             output := outputResult.Unwrap()
-            
+
+            // Tool output goes to stdout so it composes with pipes:
+            //   pureast list ./pkg | head -10
+            //   pureast dump ./pkg --format md | wc -l
+            //   pureast deps X ./pkg --format json | jq .
+            //
+            // Earlier this used cmd.Print, which routes through cobra's
+            // OutOrStderr — fine for help text and error messages, wrong
+            // for primary output. Errors continue to go to stderr via
+            // RunE's returned error and main.go's stderr writer.
             if output.Text != "" {
-                cmd.Print(output.Text)
+                fmt.Fprint(os.Stdout, output.Text)
             }
 
             if output.ExitCode != 0 {
