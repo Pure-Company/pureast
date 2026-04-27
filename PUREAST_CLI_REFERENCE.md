@@ -3,7 +3,7 @@
 PureAST extracts Go symbols, analyzes dependencies, and emits compact
 representations suitable for feeding to an LLM as context.
 
-The CLI is organized as eight verbs. Each one does one thing.
+The CLI is organized as seven verbs. Each one does one thing.
 
 ```
 pureast dump      # every symbol, signatures only — LLM context flagship
@@ -123,6 +123,21 @@ Mutually exclusive: `--minimal` and `--depth N` (use one).
 
 JSON output is stable: lists are alphabetically sorted, fields are
 fixed. Suitable for LLM caching where byte-identical output matters.
+
+When `--reverse` is set, each user is shown with its file:line location
+(relative to the path you passed). In `--format json`, names expand
+into `{name, file, line}` objects. This makes "who calls X" output
+directly actionable — you can jump straight to the call site:
+
+```
+$ pureast deps User ./pkg --reverse
+Reverse dependencies (users) of User:
+
+Functions (3):
+  - NewProfile  (profile.go:18)
+  - User.Validate  (user.go:26)
+  - UserService.AddUser  (service.go:16)
+```
 
 Examples:
 

@@ -58,6 +58,7 @@ PureAST uses subcommands. Each verb does one thing:
 pureast dump ./examples/app                 # every symbol, signatures only — LLM context
 pureast extract UserService ./examples/app  # one symbol with transitive deps
 pureast deps Profile ./examples/app         # dependency analysis
+pureast diff main ./examples/app            # symbols in files changed since main
 pureast search "Handler" ./examples/app     # fuzzy symbol search
 pureast list ./examples/app                 # enumerate all symbols
 pureast types ./examples/app                # type declarations only
@@ -70,6 +71,7 @@ pureast types ./examples/app                # type declarations only
 | `dump`    | Compact dump of every symbol — the LLM-context flagship.       |
 | `extract` | Extract one symbol plus its transitive dependencies.           |
 | `deps`    | Analyze what a symbol depends on (`--format text\|dot\|json`). |
+| `diff`    | Symbols in `.go` files changed since a git ref. PR-review use. |
 | `search`  | Fuzzy search for symbols by name pattern.                      |
 | `list`    | Enumerate all symbols in a package, optionally grouped.        |
 | `types`   | Extract type declarations only (structs, interfaces, aliases). |
