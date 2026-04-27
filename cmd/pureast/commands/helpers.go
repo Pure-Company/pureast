@@ -58,53 +58,10 @@ func resolvePathFlag(cmd *cobra.Command) (string, error) {
 	return ".", nil
 }
 
-// estimateTokens approximates the token count for a piece of text.
-// We use the well-known 4-chars-per-token heuristic from OpenAI's
-// guidance — accurate to within ~20% for English-ish source code,
-// which is good enough for budget enforcement. For exact counts
-// users should pipe through their model's actual tokenizer.
-func estimateTokens(s string) int {
-	if s == "" {
-		return 0
-	}
-	// Code is denser than prose; bias slightly downward (3.5 chars/token).
-	return (len(s)*2 + 6) / 7
-}
-
-// truncateToBudget cuts text to fit within maxTokens, appending a
-// truncation marker. If maxTokens <= 0, returns text unchanged.
-//
-// The truncation is line-aware so we don't slice mid-statement: we
-// keep whole lines until the budget is exhausted, then append a
-// human-readable marker.
-func truncateToBudget(text string, maxTokens int) (string, bool) {
-	if maxTokens <= 0 {
-		return text, false
-	}
-	if estimateTokens(text) <= maxTokens {
-		return text, false
-	}
-
-	// Convert token budget back to a char budget at the same ratio.
-	charBudget := maxTokens * 7 / 2
-	if charBudget >= len(text) {
-		return text, false
-	}
-
-	// Walk lines until we exceed the budget.
-	var b strings.Builder
-	used := 0
-	for _, line := range strings.SplitAfter(text, "\n") {
-		if used+len(line) > charBudget {
-			break
-		}
-		b.WriteString(line)
-		used += len(line)
-	}
-
-	b.WriteString("\n// ... truncated to fit token budget ...\n")
-	return b.String(), true
-}
+// estimateTokens, truncateToBudget, truncateSymbols live in pkg/extract/budget.go
+// — see that file for the canonical implementations. This package only
+// re-exports them as thin wrappers for backward-compat with the callers
+// inside cmd/pureast/commands/.
 
 // printNode renders a Go AST node back to source via go/printer.
 // Used for --bodies mode: the placeholder approach in the previous

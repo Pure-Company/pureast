@@ -123,7 +123,14 @@ func (te *ToolExecutor) ReverseDepsHandler() Handler {
 					users = graph.UsersTransitive(params.Arguments.Symbol)
 				}
 
-				text := formatReverseDeps(params.Arguments.Symbol, users, params.Arguments.Transitive)
+				text := formatReverseDeps(
+					params.Arguments.Symbol,
+					users,
+					params.Arguments.Transitive,
+					fset,
+					declMap,
+					params.Arguments.Path,
+				)
 				return textResponse(req.ID, text)
 			},
 		)
@@ -245,8 +252,21 @@ func fileExists(p string) bool {
 }
 
 // formatReverseDeps renders Users()/UsersTransitive() output as a flat
-// section list. Sorted within each section for caching determinism.
-func formatReverseDeps(symbol string, d astpkg.Dependencies, transitive bool) string {
+// section list. Each entry includes its file:line location (relative
+// to the path argument) when the symbol is defined in the analyzed
+// package — names from outside the package are kept as bare strings
+// rather than dropped, so cross-package references still surface.
+//
+// Sorted within each section for caching determinism: identical input
+// must produce byte-identical output for prompt caching to hit.
+func formatReverseDeps(
+	symbol string,
+	d astpkg.Dependencies,
+	transitive bool,
+	fset *token.FileSet,
+	declMap map[string]astpkg.DeclNode,
+	basePath string,
+) string {
 	header := fmt.Sprintf("Reverse dependencies (users) of %s", symbol)
 	if transitive {
 		header += " — transitive"
@@ -263,7 +283,11 @@ func formatReverseDeps(symbol string, d astpkg.Dependencies, transitive bool) st
 		sort.Strings(names)
 		fmt.Fprintf(&b, "%s (%d):\n", label, len(names))
 		for _, n := range names {
-			fmt.Fprintf(&b, "  - %s\n", n)
+			if loc, ok := lookupLocation(n, fset, declMap, basePath); ok {
+				fmt.Fprintf(&b, "  - %s  (%s)\n", n, loc)
+			} else {
+				fmt.Fprintf(&b, "  - %s\n", n)
+			}
 		}
 		b.WriteString("\n")
 	}
@@ -280,6 +304,38 @@ func formatReverseDeps(symbol string, d astpkg.Dependencies, transitive bool) st
 	}
 
 	return b.String()
+}
+
+// lookupLocation resolves a symbol name to its "file:line" string,
+// relative to basePath. Returns ok=false when the symbol isn't in
+// our declMap (cross-package reference) or has no AST decl attached.
+//
+// Path relativization mirrors the CLI's behavior: try filepath.Rel,
+// fall back to absolute if relativizing escapes basePath via "..".
+func lookupLocation(
+	name string,
+	fset *token.FileSet,
+	declMap map[string]astpkg.DeclNode,
+	basePath string,
+) (string, bool) {
+	decl, ok := declMap[name]
+	if !ok || decl.Decl == nil {
+		return "", false
+	}
+	pos := fset.Position(decl.Decl.Pos())
+	if pos.Filename == "" {
+		return "", false
+	}
+
+	abs, err := filepath.Abs(basePath)
+	if err != nil {
+		return fmt.Sprintf("%s:%d", pos.Filename, pos.Line), true
+	}
+	rel, err := filepath.Rel(abs, pos.Filename)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return fmt.Sprintf("%s:%d", pos.Filename, pos.Line), true
+	}
+	return fmt.Sprintf("%s:%d", rel, pos.Line), true
 }
 
 // textResponse is a small convenience wrapper for the CallToolResult

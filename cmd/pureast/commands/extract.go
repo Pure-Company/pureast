@@ -126,9 +126,16 @@ func extractAction(ctx context.Context, args ExtractArgs) result.Result[cli.Outp
 	}
 
 	// Token budget applied before format wrapping so a markdown fence
-	// always closes properly. Truncation is line-aware (see helpers.go).
+	// always closes properly. Symbol-aware truncation drops trailing
+	// whole declarations rather than slicing through one — the result
+	// stays compilable Go.
 	if args.MaxTokens > 0 {
-		code, _ = truncateToBudget(code, args.MaxTokens)
+		var truncated bool
+		code, truncated = extract.TruncateSymbols(code, args.MaxTokens)
+		if truncated {
+			fmt.Fprintf(os.Stderr,
+				"notice: extract truncated to fit --max-tokens %d\n", args.MaxTokens)
+		}
 	}
 	if args.Format == "md" {
 		title := fmt.Sprintf("%s.%s", pkgNode.Name, args.Symbol)

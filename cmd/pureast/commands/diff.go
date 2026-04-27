@@ -36,6 +36,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
+	"github.com/vinodhalaharvi/pureast/pkg/extract"
 	"github.com/vinodhalaharvi/purekernels/pkg/result"
 )
 
@@ -137,7 +138,12 @@ func diffAction(ctx context.Context, args DiffArgs) result.Result[cli.Output] {
 	out := renderDiffOutput(pkgName, args.Ref, changed, symbols, args.Bodies)
 
 	if args.MaxTokens > 0 {
-		out, _ = truncateToBudget(out, args.MaxTokens)
+		var truncated bool
+		out, truncated = extract.TruncateSymbols(out, args.MaxTokens)
+		if truncated {
+			fmt.Fprintf(os.Stderr,
+				"notice: diff truncated to fit --max-tokens %d\n", args.MaxTokens)
+		}
 	}
 	if args.Format == "md" {
 		title := fmt.Sprintf("Changes since %s", args.Ref)

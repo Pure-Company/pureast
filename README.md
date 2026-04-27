@@ -61,7 +61,7 @@ pureast deps Profile ./examples/app         # dependency analysis
 pureast diff main ./examples/app            # symbols in files changed since main
 pureast search "Handler" ./examples/app     # fuzzy symbol search
 pureast list ./examples/app                 # enumerate all symbols
-pureast types ./examples/app                # type declarations only
+pureast types ./examples/app                # [deprecated] use 'dump --kind' instead
 ```
 
 ### Verbs
@@ -74,7 +74,7 @@ pureast types ./examples/app                # type declarations only
 | `diff`    | Symbols in `.go` files changed since a git ref. PR-review use. |
 | `search`  | Fuzzy search for symbols by name pattern.                      |
 | `list`    | Enumerate all symbols in a package, optionally grouped.        |
-| `types`   | Extract type declarations only (structs, interfaces, aliases). |
+| `types`   | **Deprecated**: use `dump --kind struct\|interface` instead.    |
 
 Run `pureast <verb> --help` for the flags specific to each verb.
 

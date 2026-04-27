@@ -12,7 +12,7 @@ pureast deps      # what does a symbol depend on (or who depends on it)
 pureast diff      # symbols in files changed since a git ref
 pureast search    # fuzzy symbol search
 pureast list      # enumerate all symbols
-pureast types     # type declarations only
+pureast types     # [deprecated] use 'dump --kind' instead
 ```
 
 Path is always positional and defaults to the current directory:
@@ -232,6 +232,16 @@ pureast list ./pkg --grouped=false
 ---
 
 ## `pureast types` — type declarations only
+
+> **DEPRECATED.** This verb is being phased out. Use `pureast dump --kind <kind>`
+> instead — it covers all the same cases and is the canonical path going
+> forward. The verb still works for now (a stderr warning fires on every
+> invocation; suppress with `TYPES_NO_DEPRECATION_WARN=1`), but a future
+> release will remove it. Migration:
+>
+>     pureast types ./pkg                   →  pureast dump ./pkg --kind type
+>     pureast types ./pkg --kind struct     →  pureast dump ./pkg --kind struct
+>     pureast types ./pkg --kind interface  →  pureast dump ./pkg --kind interface
 
 Extract only type declarations (structs, interfaces, aliases) — no
 function bodies. For functions and methods, prefer

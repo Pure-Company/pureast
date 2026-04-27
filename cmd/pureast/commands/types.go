@@ -50,10 +50,23 @@ type FunctionSignature struct {
 
 func NewTypesCommand() *cobra.Command {
 	cmd := cli.NewCommand[TypesArgs]("types").
-		Short("Extract type definitions").
+		Short("Extract type definitions [deprecated — use 'dump --kind']").
 		Long(`Extract type definitions (structs, interfaces, aliases) without
-function bodies. For functions and methods, prefer pureast dump --kind func
-or --kind method, which is the canonical path going forward.
+function bodies.
+
+DEPRECATED: 'pureast types' is being phased out. Its functionality is
+fully covered by 'pureast dump --kind <kind>', which is the canonical
+verb for filtering by symbol kind. Migration:
+
+  pureast types ./pkg                   →  pureast dump ./pkg --kind type
+  pureast types ./pkg --kind struct     →  pureast dump ./pkg --kind struct
+  pureast types ./pkg --kind interface  →  pureast dump ./pkg --kind interface
+
+The 'types' verb still works and prints output as before. A future
+release will remove it entirely. Switch your scripts and prompts now.
+
+For functions and methods, prefer pureast dump --kind func or
+--kind method, which is the canonical path going forward.
 
 Filtering uses --kind:
   --kind all        (default) structs and interfaces
@@ -93,6 +106,17 @@ Examples:
 }
 
 func parseTypesArgs(cmd *cobra.Command, args []string) result.Result[TypesArgs] {
+	// Top-level deprecation notice. Prints once per invocation, before
+	// any output, so it's visible whether or not the user redirects
+	// stdout. The verb still works — this is just a heads-up that the
+	// path is going away. Suppress with TYPES_NO_DEPRECATION_WARN=1
+	// for users who've migrated and want quiet output during the
+	// transition window.
+	if os.Getenv("TYPES_NO_DEPRECATION_WARN") == "" {
+		fmt.Fprintln(os.Stderr,
+			"warning: 'pureast types' is deprecated; use 'pureast dump --kind <kind>' instead")
+	}
+
 	path, err := resolvePath(cmd, args)
 	if err != nil {
 		return result.Err[TypesArgs](err)
@@ -215,9 +239,15 @@ func typesAction(ctx context.Context, args TypesArgs) result.Result[cli.Output] 
 
 	code := output.String()
 
-	// Apply budget before format wrapping so a markdown fence always closes.
+	// Apply budget before format wrapping so a markdown fence always
+	// closes. Symbol-aware so output stays compilable.
 	if args.MaxTokens > 0 {
-		code, _ = truncateToBudget(code, args.MaxTokens)
+		var truncated bool
+		code, truncated = extract.TruncateSymbols(code, args.MaxTokens)
+		if truncated {
+			fmt.Fprintf(os.Stderr,
+				"notice: types truncated to fit --max-tokens %d\n", args.MaxTokens)
+		}
 	}
 	if args.Format == "md" {
 		title := fmt.Sprintf("%s — types", pkgNode.Name)

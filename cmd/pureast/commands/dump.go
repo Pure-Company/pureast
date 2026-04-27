@@ -27,6 +27,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
+	"github.com/vinodhalaharvi/pureast/pkg/extract"
 	"github.com/vinodhalaharvi/purekernels/pkg/result"
 )
 
@@ -145,11 +146,18 @@ func dumpAction(ctx context.Context, args DumpArgs) result.Result[cli.Output] {
 	out := renderDump(pkgName, symbols, args)
 
 	// Token budget is applied to the final rendered text, not the
-	// individual symbols. This means truncation is line-aware (we cut
-	// at line boundaries) and the header survives — the LLM still
-	// orients itself even if the tail is missing.
+	// individual symbols. We use symbol-aware truncation so the result
+	// is always syntactically complete Go: we drop trailing whole
+	// declarations rather than slice through one. Inside a markdown
+	// fence this matters — partial output produces invalid Go that
+	// the LLM then has to repair.
 	if args.MaxTokens > 0 {
-		out, _ = truncateToBudget(out, args.MaxTokens)
+		var truncated bool
+		out, truncated = extract.TruncateSymbols(out, args.MaxTokens)
+		if truncated {
+			fmt.Fprintf(os.Stderr,
+				"notice: dump truncated to fit --max-tokens %d\n", args.MaxTokens)
+		}
 	}
 
 	// Markdown wrapping is applied last so the fence wraps whatever

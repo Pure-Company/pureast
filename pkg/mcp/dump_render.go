@@ -63,7 +63,12 @@ func renderDumpForMCP(pkg astpkg.PackageNode, opts dumpRenderOptions) string {
 	body := renderSymbolSections(pkg.Name, symbols)
 
 	if opts.MaxTokens > 0 {
-		body = truncateForBudget(body, opts.MaxTokens)
+		// Symbol-aware truncation keeps the dump syntactically complete
+		// (no half-emitted struct or function). The bool return is
+		// ignored here because the MCP layer doesn't have a stderr
+		// channel to surface the notice — that's a per-protocol UX
+		// decision; the CLI surfaces it, MCP doesn't.
+		body, _ = extract.TruncateSymbols(body, opts.MaxTokens)
 	}
 
 	if opts.Format == "md" {
@@ -139,30 +144,8 @@ func renderSymbolSections(pkgName string, symbols []extract.SymbolInfo) string {
 	return b.String()
 }
 
-// truncateForBudget cuts text to fit a token budget at line boundaries.
-// The 3.5-chars-per-token approximation matches what we use elsewhere
-// (see helpers.go in cmd/pureast/commands). Slightly conservative for
-// dense code, which is the right direction — overshooting the budget
-// is worse than undershooting it.
-func truncateForBudget(text string, maxTokens int) string {
-	const charsPerToken = 7 // numerator of 7/2 = 3.5
-	charBudget := maxTokens * charsPerToken / 2
-	if len(text) <= charBudget {
-		return text
-	}
-
-	var b strings.Builder
-	used := 0
-	for _, line := range strings.SplitAfter(text, "\n") {
-		if used+len(line) > charBudget {
-			break
-		}
-		b.WriteString(line)
-		used += len(line)
-	}
-	b.WriteString("\n// ... truncated to fit token budget ...\n")
-	return b.String()
-}
+// truncation logic now lives in pkg/extract/budget.go so CLI and MCP
+// share a single implementation.
 
 // wrapMarkdown wraps text in a fenced ```go block with a heading. The
 // markdown form parses cleanly in Claude's chat UI and gives the LLM
