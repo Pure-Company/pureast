@@ -17,9 +17,7 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -183,150 +181,161 @@ func dumpAction(ctx context.Context, args DumpArgs) result.Result[cli.Output] {
 	return result.Ok(cli.Output{Text: out, ExitCode: 0})
 }
 
+// collectSymbols loads the package, discovers every top-level symbol
+// via extract.DiscoverAllSymbols (the canonical walker), filters by
+// the user's --kind / --exported / --include-tests flags, and returns
+// dumpedSymbol records ready for rendering.
+//
+// This used to be a parallel AST walker that duplicated discovery
+// logic. Now it's a thin adapter: the heavy lifting happens in
+// pkg/extract, the per-symbol rendering happens here. The renderer
+// functions (renderFuncDecl, renderTypeSpec, etc.) consume the
+// SymbolInfo.Decl that DiscoverAllSymbols already populates.
 func collectSymbols(args DumpArgs) ([]dumpedSymbol, string, error) {
-	var (
-		symbols []dumpedSymbol
-		pkgName string
-	)
-
-	walkErr := filepath.WalkDir(args.FilePath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if strings.HasPrefix(name, ".") || name == "vendor" || name == "node_modules" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		if !args.IncludeTests && strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-
-		fset := token.NewFileSet()
-		file, parseErr := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if parseErr != nil {
-			// skip unparseable files; don't abort the whole dump
-			return nil
-		}
-		if pkgName == "" {
-			pkgName = file.Name.Name
-		}
-
-		rel, _ := filepath.Rel(args.FilePath, path)
-		for _, decl := range file.Decls {
-			ss := extractFromDecl(fset, file, decl, rel, args)
-			symbols = append(symbols, ss...)
-		}
-		return nil
-	})
-
-	if walkErr != nil {
-		return nil, "", walkErr
+	fset := token.NewFileSet()
+	pkgNode, err := extract.ExtractDirectoryConcurrent(fset, args.FilePath, true, 0)
+	if err != nil {
+		return nil, "", err
 	}
 
-	// Stable order: file, then line
-	sort.Slice(symbols, func(i, j int) bool {
-		if symbols[i].File != symbols[j].File {
-			return symbols[i].File < symbols[j].File
+	all := extract.DiscoverAllSymbols(pkgNode)
+
+	dumped := make([]dumpedSymbol, 0, len(all))
+	for _, s := range all {
+		// Map the canonical kind names ("function") to the dump verb's
+		// shorter aliases ("func"). Keeping --kind func in the CLI is
+		// nicer than --kind function; the discovery layer uses the
+		// long form because that's the AST/Go vernacular.
+		kind := normalizeDumpKind(s.Kind)
+		if !kindAllowed(args.Kind, kind) {
+			continue
 		}
-		return symbols[i].Line < symbols[j].Line
+		if args.ExportedOnly && !ast.IsExported(s.Name) {
+			continue
+		}
+		if !args.IncludeTests && declInTestFile(fset, s.Decl) {
+			continue
+		}
+
+		ds := dumpedSymbol{
+			Kind:     kind,
+			Name:     s.Name,
+			Receiver: s.Receiver,
+		}
+		if s.Decl != nil {
+			pos := fset.Position(s.Decl.Pos())
+			rel, relErr := filepath.Rel(args.FilePath, pos.Filename)
+			if relErr != nil || strings.HasPrefix(rel, "..") {
+				rel = pos.Filename
+			}
+			ds.File = rel
+			ds.Line = pos.Line
+		}
+		ds.Source = renderSymbolSource(fset, s, args.Bodies)
+		if args.IncludeDocs {
+			ds.Doc = extractSymbolDoc(s.Decl)
+		}
+		dumped = append(dumped, ds)
+	}
+
+	// Stable order: file, then line. Required for byte-identical
+	// output across runs (prompt caching).
+	sort.Slice(dumped, func(i, j int) bool {
+		if dumped[i].File != dumped[j].File {
+			return dumped[i].File < dumped[j].File
+		}
+		return dumped[i].Line < dumped[j].Line
 	})
 
-	return symbols, pkgName, nil
+	return dumped, pkgNode.Name, nil
 }
 
-func extractFromDecl(fset *token.FileSet, file *ast.File, decl ast.Decl, rel string, args DumpArgs) []dumpedSymbol {
-	var out []dumpedSymbol
+// normalizeDumpKind maps DiscoverAllSymbols' kind names to the CLI's
+// --kind aliases. Keeping the user-facing "func" tighter than the
+// AST-internal "function" is a small UX win; nobody types "function"
+// at a CLI when "func" works.
+func normalizeDumpKind(k string) string {
+	switch k {
+	case "function":
+		return "func"
+	}
+	return k
+}
 
+// declInTestFile reports whether a declaration lives in a _test.go file.
+// The discovery layer doesn't filter tests itself; we do that at the
+// dump layer because list/types might want them in some contexts.
+func declInTestFile(fset *token.FileSet, decl ast.Decl) bool {
+	if decl == nil {
+		return false
+	}
+	pos := fset.Position(decl.Pos())
+	return strings.HasSuffix(pos.Filename, "_test.go")
+}
+
+// extractSymbolDoc returns the documentation comment text attached to
+// the declaration, if any. GenDecl carries the doc on the spec when
+// the spec is the only one in the block, on the GenDecl otherwise.
+// FuncDecl always has it directly.
+func extractSymbolDoc(decl ast.Decl) string {
 	switch d := decl.(type) {
-
 	case *ast.FuncDecl:
-		isMethod := d.Recv != nil && len(d.Recv.List) > 0
-		kind := "func"
-		if isMethod {
-			kind = "method"
+		if d.Doc != nil {
+			return d.Doc.Text()
 		}
-		if !kindAllowed(args.Kind, kind) {
-			return nil
-		}
-		if args.ExportedOnly && !ast.IsExported(d.Name.Name) {
-			return nil
-		}
-
-		sym := dumpedSymbol{
-			Kind: kind,
-			Name: d.Name.Name,
-			File: rel,
-			Line: fset.Position(d.Pos()).Line,
-		}
-		if args.IncludeDocs && d.Doc != nil {
-			sym.Doc = d.Doc.Text()
-		}
-		if isMethod {
-			sym.Receiver = renderFieldList(d.Recv)
-		}
-		sym.Source = renderFuncDecl(fset, d, args.Bodies)
-		out = append(out, sym)
-
 	case *ast.GenDecl:
-		// type / const / var blocks may contain multiple specs
-		for _, spec := range d.Specs {
-			switch s := spec.(type) {
-
+		if d.Doc != nil {
+			return d.Doc.Text()
+		}
+		if len(d.Specs) > 0 {
+			switch s := d.Specs[0].(type) {
 			case *ast.TypeSpec:
-				kind := classifyType(s.Type)
-				if !kindAllowed(args.Kind, kind) && !kindAllowed(args.Kind, "type") {
-					continue
+				if s.Doc != nil {
+					return s.Doc.Text()
 				}
-				if args.ExportedOnly && !ast.IsExported(s.Name.Name) {
-					continue
-				}
-				sym := dumpedSymbol{
-					Kind: kind,
-					Name: s.Name.Name,
-					File: rel,
-					Line: fset.Position(s.Pos()).Line,
-				}
-				if args.IncludeDocs {
-					sym.Doc = combineDoc(d.Doc, s.Doc)
-				}
-				sym.Source = renderTypeSpec(s)
-				out = append(out, sym)
-
 			case *ast.ValueSpec:
-				kind := "var"
-				if d.Tok == token.CONST {
-					kind = "const"
-				}
-				if !kindAllowed(args.Kind, kind) {
-					continue
-				}
-				for _, name := range s.Names {
-					if args.ExportedOnly && !ast.IsExported(name.Name) {
-						continue
-					}
-					sym := dumpedSymbol{
-						Kind: kind,
-						Name: name.Name,
-						File: rel,
-						Line: fset.Position(name.Pos()).Line,
-					}
-					if args.IncludeDocs {
-						sym.Doc = combineDoc(d.Doc, s.Doc)
-					}
-					sym.Source = renderValueSpec(kind, name.Name, s)
-					out = append(out, sym)
+				if s.Doc != nil {
+					return s.Doc.Text()
 				}
 			}
 		}
 	}
+	return ""
+}
 
-	return out
+// renderSymbolSource produces the per-symbol body text the dump verb
+// emits. For funcs/methods we go through go/printer when --bodies is
+// on (real implementation) or reconstruct the signature manually when
+// it's off. For types we render a compact "type X struct {...}" form;
+// for consts/vars a one-liner.
+func renderSymbolSource(fset *token.FileSet, s extract.SymbolInfo, includeBody bool) string {
+	if s.Decl == nil {
+		// Defensive: should not happen, but emit something tractable
+		// rather than panic on a malformed input.
+		return s.Kind + " " + s.Name
+	}
+	switch d := s.Decl.(type) {
+	case *ast.FuncDecl:
+		return renderFuncDecl(fset, d, includeBody)
+	case *ast.GenDecl:
+		if len(d.Specs) == 0 {
+			return ""
+		}
+		switch spec := d.Specs[0].(type) {
+		case *ast.TypeSpec:
+			return renderTypeSpec(spec)
+		case *ast.ValueSpec:
+			kind := "var"
+			if d.Tok == token.CONST {
+				kind = "const"
+			}
+			// ValueSpecs can declare multiple names in one decl
+			// (var a, b int = 1, 2). For dump purposes we render
+			// just the requested name's slice of the spec.
+			return renderValueSpec(kind, s.Name, spec)
+		}
+	}
+	return ""
 }
 
 func kindAllowed(filter, kind string) bool {
@@ -341,17 +350,6 @@ func kindAllowed(filter, kind string) bool {
 		return true
 	}
 	return false
-}
-
-func classifyType(expr ast.Expr) string {
-	switch expr.(type) {
-	case *ast.StructType:
-		return "struct"
-	case *ast.InterfaceType:
-		return "interface"
-	default:
-		return "type" // alias or named type
-	}
 }
 
 func renderFuncDecl(fset *token.FileSet, d *ast.FuncDecl, includeBody bool) string {

@@ -25,8 +25,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"go/ast"
-	"go/parser"
 	"go/token"
 	"os"
 	"os/exec"
@@ -47,6 +45,7 @@ type DiffArgs struct {
 	Format     string // go|md
 	Bodies     bool
 	MaxTokens  int
+	WholeFile  bool // if true, include all symbols from changed files; default = only changed-line symbols
 }
 
 func NewDiffCommand() *cobra.Command {
@@ -71,6 +70,9 @@ Examples:
 	cmd.Flags().String("format", "go", "Output format: go|md")
 	cmd.Flags().Bool("bodies", false, "Include function bodies")
 	cmd.Flags().Int("max-tokens", 0, "Truncate output to fit token budget (0 = unbounded)")
+	cmd.Flags().Bool("whole-file", false,
+		"Include every symbol from changed files (legacy behavior). "+
+			"Default: only symbols whose lines actually changed.")
 
 	return cmd
 }
@@ -93,6 +95,7 @@ func parseDiffArgs(cmd *cobra.Command, args []string) result.Result[DiffArgs] {
 	format, _ := cmd.Flags().GetString("format")
 	bodies, _ := cmd.Flags().GetBool("bodies")
 	maxTokens, _ := cmd.Flags().GetInt("max-tokens")
+	wholeFile, _ := cmd.Flags().GetBool("whole-file")
 
 	if format != "go" && format != "md" {
 		return result.Err[DiffArgs](fmt.Errorf(
@@ -106,6 +109,7 @@ func parseDiffArgs(cmd *cobra.Command, args []string) result.Result[DiffArgs] {
 		Format:     format,
 		Bodies:     bodies,
 		MaxTokens:  maxTokens,
+		WholeFile:  wholeFile,
 	})
 }
 
@@ -124,10 +128,26 @@ func diffAction(ctx context.Context, args DiffArgs) result.Result[cli.Output] {
 		})
 	}
 
-	// Reuse the dump symbol collector, but restricted to the changed
-	// files only. This keeps formatting consistent with `dump` so
-	// users don't have to learn a second output style.
-	symbols, pkgName, err := collectSymbolsFromFiles(changed, args.Bodies)
+	// By default we filter symbols to those whose line range actually
+	// overlaps a changed hunk. --whole-file disables this — useful when
+	// the user wants the full surrounding context for every modified
+	// file (e.g. heavily refactored PRs where line-level filtering hides
+	// related context).
+	var hunks map[string][]hunkRange
+	if !args.WholeFile {
+		hunks, err = changedHunks(ctx, args.Ref, args.FilePath)
+		if err != nil {
+			// Surface the error but fall through to whole-file mode
+			// rather than failing — better to over-include than to
+			// stop the user dead because git changed its diff format.
+			fmt.Fprintf(os.Stderr,
+				"warning: --unified=0 hunk parse failed (%v); falling back to whole-file mode\n", err)
+			hunks = nil
+			args.WholeFile = true
+		}
+	}
+
+	symbols, pkgName, err := collectSymbolsFromFiles(changed, args.Bodies, hunks)
 	if err != nil {
 		return result.Ok(cli.Output{
 			Text:     fmt.Sprintf("Error: %v\n", err),
@@ -198,49 +218,75 @@ func changedGoFiles(ctx context.Context, ref, root string) ([]string, error) {
 
 // collectSymbolsFromFiles parses each given file and yields the same
 // dumpedSymbol shape that `dump` uses, so renderDump can format the
-// result. We don't reuse collectSymbols directly because it walks a
-// directory; here we have an explicit file list.
-func collectSymbolsFromFiles(paths []string, includeBodies bool) ([]dumpedSymbol, string, error) {
-	args := DumpArgs{
-		Bodies:       includeBodies,
-		Kind:         "all",
-		IncludeDocs:  true,
-		IncludeTests: true, // diff respects whatever git reports; user already opted in
+// result. Internally it goes through the same extract.DiscoverAllSymbols
+// path as `dump` — only the file selection differs (an explicit list
+// from `git diff` rather than a directory walk).
+//
+// When hunks is non-nil, symbols are further filtered to those whose
+// line range overlaps a changed hunk in their file. A nil hunks map
+// preserves whole-file behavior (the default for non-diff callers,
+// and what --whole-file gives in the diff verb).
+func collectSymbolsFromFiles(paths []string, includeBodies bool, hunks map[string][]hunkRange) ([]dumpedSymbol, string, error) {
+	if len(paths) == 0 {
+		return nil, "", nil
 	}
 
-	var (
-		symbols []dumpedSymbol
-		pkgName string
-	)
+	fset := token.NewFileSet()
+	pkgNode, err := extract.ExtractPackageFromPaths(fset, paths)
+	if err != nil {
+		// Even on partial parse failure, ExtractPackageFromPaths returns
+		// what it could — we surface the error but also use whatever
+		// PackageNode came back, so the user sees changes from files
+		// that did parse.
+		if pkgNode.Name == "" {
+			return nil, "", err
+		}
+	}
 
-	for _, path := range paths {
-		fset := token.NewFileSet()
-		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if err != nil {
-			// Skip unparseable files rather than aborting the whole
-			// diff — a syntax error elsewhere shouldn't prevent
-			// surfacing changes that did parse.
+	all := extract.DiscoverAllSymbols(pkgNode)
+	dumped := make([]dumpedSymbol, 0, len(all))
+	for _, s := range all {
+		if s.Decl == nil {
 			continue
 		}
-		if pkgName == "" {
-			pkgName = file.Name.Name
+		startPos := fset.Position(s.Decl.Pos())
+		endPos := fset.Position(s.Decl.End())
+
+		// Hunk-based filtering: skip symbols whose line range doesn't
+		// touch any changed hunk in the same file. fset.Position gives
+		// us absolute filenames; the hunks map is keyed by absolute
+		// path too (changedHunks resolves via filepath.Join with root).
+		if hunks != nil {
+			fileHunks := hunks[startPos.Filename]
+			if len(fileHunks) == 0 {
+				continue
+			}
+			if !rangeOverlaps(startPos.Line, endPos.Line, fileHunks) {
+				continue
+			}
 		}
 
-		base := filepath.Base(path)
-		for _, decl := range file.Decls {
-			ss := extractFromDecl(fset, file, decl, base, args)
-			symbols = append(symbols, ss...)
+		kind := normalizeDumpKind(s.Kind)
+		ds := dumpedSymbol{
+			Kind:     kind,
+			Name:     s.Name,
+			Receiver: s.Receiver,
+			File:     filepath.Base(startPos.Filename),
+			Line:     startPos.Line,
 		}
+		ds.Source = renderSymbolSource(fset, s, includeBodies)
+		ds.Doc = extractSymbolDoc(s.Decl)
+		dumped = append(dumped, ds)
 	}
 
-	sort.Slice(symbols, func(i, j int) bool {
-		if symbols[i].File != symbols[j].File {
-			return symbols[i].File < symbols[j].File
+	sort.Slice(dumped, func(i, j int) bool {
+		if dumped[i].File != dumped[j].File {
+			return dumped[i].File < dumped[j].File
 		}
-		return symbols[i].Line < symbols[j].Line
+		return dumped[i].Line < dumped[j].Line
 	})
 
-	return symbols, pkgName, nil
+	return dumped, pkgNode.Name, nil
 }
 
 func renderDiffOutput(pkgName, ref string, files []string, symbols []dumpedSymbol, bodies bool) string {
@@ -296,9 +342,3 @@ func renderDiffOutput(pkgName, ref string, files []string, symbols []dumpedSymbo
 
 	return b.String()
 }
-
-// _ keeps go/ast imported for symmetry with collectSymbols even if
-// extractFromDecl is the only consumer of the package within this file.
-// Without this the linter complains; deleting the import means a future
-// edit needs to re-add it.
-var _ = ast.NewIdent

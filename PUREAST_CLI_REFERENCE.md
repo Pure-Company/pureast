@@ -155,7 +155,7 @@ dot -Tpng graph.dot -o graph.png
 
 ## `pureast diff` — symbols in changed files
 
-Extracts every symbol in `.go` files that differ between a git ref and
+Extracts symbols whose lines actually changed between a git ref and
 HEAD. The intended use is PR-review and "what's new" LLM context: feed
 only the code that changed in this branch, not the whole repo.
 
@@ -163,27 +163,34 @@ only the code that changed in this branch, not the whole repo.
 pureast diff REF [PATH] [flags]
 ```
 
-| Flag             | Default | Effect                                  |
-| ---------------- | ------- | --------------------------------------- |
-| `--bodies`       | off     | Include function bodies                 |
-| `--format`       | `go`    | `go` or `md`                            |
-| `--max-tokens N` | 0       | Truncate to fit budget                  |
-| `-o FILE`        |         | Output file                             |
+| Flag             | Default | Effect                                                |
+| ---------------- | ------- | ----------------------------------------------------- |
+| `--whole-file`   | off     | Include every symbol in changed files (legacy mode)   |
+| `--bodies`       | off     | Include function bodies                               |
+| `--format`       | `go`    | `go` or `md`                                          |
+| `--max-tokens N` | 0       | Truncate to fit budget                                |
+| `-o FILE`        |         | Output file                                           |
 
 REF is any git revision: branch, tag, commit, `HEAD~N`.
+
+By default, `pureast diff` runs `git diff --unified=0` to find the exact
+lines that changed in HEAD, parses the hunk headers, and intersects them
+against AST line ranges. A symbol is included only if its declaration
+overlaps a changed hunk. This is dramatically more focused for PR review
+— a 1-line edit in a 2000-line file no longer dumps the whole file.
+
+Pass `--whole-file` to revert to file-level granularity (any symbol in
+any touched file). Useful when you want the surrounding context for
+heavily-refactored PRs.
 
 Examples:
 
 ```bash
-pureast diff main
-pureast diff origin/main ./pkg
-pureast diff HEAD~5 --bodies
-pureast diff main --format md -o pr-context.md
+pureast diff main                          # only changed-line symbols
+pureast diff main --whole-file             # everything in touched files
+pureast diff origin/main ./pkg --bodies
+pureast diff HEAD~5 --format md -o pr.md
 ```
-
-Granularity is file-level: a symbol in a changed file is included
-even if it wasn't itself modified. Line-level filtering is a future
-improvement.
 
 ---
 

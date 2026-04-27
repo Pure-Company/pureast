@@ -135,6 +135,13 @@ func depsAction(ctx context.Context, args DepsArgs) result.Result[cli.Output] {
 	//   default                → ResolveWithAssociatedCode
 	deps := selectDeps(graph, args)
 
+	// Strip parser-leak noise from the Functions set. The forward-dep
+	// extractor records every Ident/SelectorExpr it walks — including
+	// receiver-variable references like "p" or "p.Address" — because
+	// it lacks type-resolution context. CleanDependencies removes
+	// those by intersecting against declMap. See pkg/analyze/clean.go.
+	deps = analyze.CleanDependencies(deps, declMap)
+
 	switch args.Format {
 	case "dot":
 		// DOT output uses the existing generator which walks the

@@ -71,7 +71,7 @@ pureast types ./examples/app                # [deprecated] use 'dump --kind' ins
 | `dump`    | Compact dump of every symbol — the LLM-context flagship.       |
 | `extract` | Extract one symbol plus its transitive dependencies.           |
 | `deps`    | Analyze what a symbol depends on (`--format text\|dot\|json`). |
-| `diff`    | Symbols in `.go` files changed since a git ref. PR-review use. |
+| `diff`    | Symbols whose lines changed since a git ref (PR-review use).   |
 | `search`  | Fuzzy search for symbols by name pattern.                      |
 | `list`    | Enumerate all symbols in a package, optionally grouped.        |
 | `types`   | **Deprecated**: use `dump --kind struct\|interface` instead.    |

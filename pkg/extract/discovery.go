@@ -11,12 +11,19 @@ import (
 	"github.com/vinodhalaharvi/purekernels/pkg/monoid"
 )
 
-// SymbolInfo represents a discovered symbol
+// SymbolInfo represents a discovered symbol.
+//
+// Decl is the underlying go/ast declaration. It's populated from the
+// upstream PackageNode and is the entry point for any consumer that
+// needs richer information than name/kind — render signatures, look
+// up file:line via a FileSet, walk doc comments, etc. Treat it as
+// read-only; mutating shared AST nodes would corrupt the input.
 type SymbolInfo struct {
 	Name     string
 	Kind     string // "struct", "interface", "function", "method", "const", "var"
 	Package  string
-	Receiver string // For methods: the receiver type
+	Receiver string   // For methods: the receiver type
+	Decl     ast.Decl // Underlying AST declaration (nil only for synthesized symbols)
 }
 
 // DiscoverAllSymbols finds all symbols in a package
@@ -91,6 +98,7 @@ func extractSymbolInfo(declNode astpkg.DeclNode, packageName string) []SymbolInf
 		Kind:     kind,
 		Package:  packageName,
 		Receiver: receiver,
+		Decl:     declNode.Decl,
 	}}
 }
 
