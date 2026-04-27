@@ -32,3 +32,11 @@ Thumbs.db
 /pureast-mcp
 /.pureast-index.json
 /my-index.json
+
+# DOT graphs from `pureast deps --format dot > graph.dot`
+*.dot
+
+# Files accidentally created when a flag eats its argument
+# (e.g. `pureast deps X . --format json -o`  → `-o` becomes a stray empty file)
+/-o
+/-f

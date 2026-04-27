@@ -112,12 +112,13 @@ Shows what a symbol depends on (or who depends on it, with `--reverse`).
 pureast deps SYMBOL [PATH] [flags]
 ```
 
-| Flag         | Default | Effect                                                 |
-| ------------ | ------- | ------------------------------------------------------ |
-| `--format`   | `text`  | `text\|dot\|json`                                      |
-| `--depth N`  | -1      | Max traversal depth (`-1` = unbounded, `0` = direct)   |
-| `--reverse`  | off     | Show users instead of dependencies                     |
-| `--minimal`  | off     | Equivalent to a small bounded depth (legacy)           |
+| Flag          | Default | Effect                                                 |
+| ------------- | ------- | ------------------------------------------------------ |
+| `--format`    | `text`  | `text\|dot\|json`                                      |
+| `--depth N`   | -1      | Max traversal depth (`-1` = unbounded, `0` = direct)   |
+| `--reverse`   | off     | Show users instead of dependencies                     |
+| `--locations` | off     | Show file:line for each dep (always on for `--reverse`)|
+| `--minimal`   | off     | Equivalent to a small bounded depth (legacy)           |
 
 Mutually exclusive: `--minimal` and `--depth N` (use one).
 
@@ -125,9 +126,10 @@ JSON output is stable: lists are alphabetically sorted, fields are
 fixed. Suitable for LLM caching where byte-identical output matters.
 
 When `--reverse` is set, each user is shown with its file:line location
-(relative to the path you passed). In `--format json`, names expand
-into `{name, file, line}` objects. This makes "who calls X" output
-directly actionable — you can jump straight to the call site:
+(relative to the path you passed). For forward deps, opt in with
+`--locations`. In `--format json`, names expand into `{name, file, line}`
+objects whenever locations are on. This makes the output directly
+actionable — you can jump straight to a definition or call site:
 
 ```
 $ pureast deps User ./pkg --reverse
@@ -137,6 +139,14 @@ Functions (3):
   - NewProfile  (profile.go:18)
   - User.Validate  (user.go:26)
   - UserService.AddUser  (service.go:16)
+
+$ pureast deps Profile ./pkg --locations
+Dependencies for Profile:
+
+Types (3):
+  - Address  (profile.go:4)
+  - Profile  (profile.go:11)
+  - User     (user.go:6)
 ```
 
 Examples:

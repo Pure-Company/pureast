@@ -184,3 +184,42 @@ func TestFormatDepsJSON_SortedAlphabetically(t *testing.T) {
 		t.Errorf("output missing functions field: %s", out)
 	}
 }
+
+// TestFormatDepsJSON_ForwardWithLocations covers the --locations flag
+// for forward deps. Same rich shape as --reverse output: each entry
+// becomes {name, file, line}.
+func TestFormatDepsJSON_ForwardWithLocations(t *testing.T) {
+	g, fset, declMap := setupGraph(t)
+	deps := g.ResolveTransitive("Profile")
+
+	out := formatDepsJSON("Profile", deps, true, fset, declMap, ".")
+
+	var parsed struct {
+		Symbol string `json:"symbol"`
+		Types  []struct {
+			Name string `json:"name"`
+			File string `json:"file"`
+			Line int    `json:"line"`
+		} `json:"types"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("forward+locations should produce object shape: %v\noutput:\n%s", err, out)
+	}
+
+	if len(parsed.Types) == 0 {
+		t.Fatalf("expected types in Profile's deps")
+	}
+	// At least one entry should have a non-empty file (the in-package types do)
+	hasFile := false
+	for _, e := range parsed.Types {
+		if e.Name == "" {
+			t.Errorf("missing name: %+v", e)
+		}
+		if e.File != "" {
+			hasFile = true
+		}
+	}
+	if !hasFile {
+		t.Errorf("no file populated; locations didn't kick in for forward deps")
+	}
+}

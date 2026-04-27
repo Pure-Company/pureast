@@ -27,12 +27,13 @@ import (
 )
 
 type DepsArgs struct {
-	FilePath string
-	Symbol   string
-	Format   string // text|dot|json
-	Minimal  bool
-	Depth    int  // -1 = unbounded (equivalent to current full transitive)
-	Reverse  bool // who uses this symbol, instead of what it uses
+	FilePath  string
+	Symbol    string
+	Format    string // text|dot|json
+	Minimal   bool
+	Depth     int  // -1 = unbounded (equivalent to current full transitive)
+	Reverse   bool // who uses this symbol, instead of what it uses
+	Locations bool // include file:line for each dep entry (always on for --reverse)
 }
 
 func NewDepsCommand() *cobra.Command {
@@ -48,6 +49,7 @@ Examples:
   pureast deps Profile ./pkg --depth 1            # one-hop only
   pureast deps Profile ./pkg --reverse            # who uses Profile
   pureast deps Profile ./pkg --reverse --depth 1  # direct callers only
+  pureast deps Profile ./pkg --locations          # show file:line for each dep
   pureast deps Profile ./pkg --format dot > deps.dot
   dot -Tpng deps.dot -o deps.png`).
 		ParseArgs(parseDepsArgs).
@@ -58,6 +60,9 @@ Examples:
 	cmd.Flags().Bool("minimal", false, "Show only direct (non-transitive) dependencies")
 	cmd.Flags().Int("depth", -1, "Max traversal depth (-1 = unbounded, 0 = direct only)")
 	cmd.Flags().Bool("reverse", false, "Show who depends on the symbol, not what it depends on")
+	cmd.Flags().Bool("locations", false,
+		"Include file:line for each dep entry. Always on for --reverse "+
+			"(the use case where it's most useful); opt-in for forward.")
 
 	// Back-compat: --file kept as deprecated alias for positional PATH
 	cmd.Flags().StringP("file", "f", "", "[deprecated] use positional PATH")
@@ -83,6 +88,7 @@ func parseDepsArgs(cmd *cobra.Command, args []string) result.Result[DepsArgs] {
 	minimal, _ := cmd.Flags().GetBool("minimal")
 	depth, _ := cmd.Flags().GetInt("depth")
 	reverse, _ := cmd.Flags().GetBool("reverse")
+	locations, _ := cmd.Flags().GetBool("locations")
 
 	switch format {
 	case "text", "dot", "json":
@@ -101,12 +107,13 @@ func parseDepsArgs(cmd *cobra.Command, args []string) result.Result[DepsArgs] {
 	}
 
 	return result.Ok(DepsArgs{
-		FilePath: path,
-		Symbol:   symbol,
-		Format:   format,
-		Minimal:  minimal,
-		Depth:    depth,
-		Reverse:  reverse,
+		FilePath:  path,
+		Symbol:    symbol,
+		Format:    format,
+		Minimal:   minimal,
+		Depth:     depth,
+		Reverse:   reverse,
+		Locations: locations,
 	})
 }
 
@@ -155,8 +162,13 @@ func depsAction(ctx context.Context, args DepsArgs) result.Result[cli.Output] {
 		})
 
 	case "json":
+		// Locations are emitted for --reverse (where they're most useful —
+		// "who calls X" wants jump-to-source) and opt-in for forward via
+		// --locations. The two together cover the cases where file:line
+		// adds value without changing default forward output.
+		withLocations := args.Reverse || args.Locations
 		return result.Ok(cli.Output{
-			Text:     formatDepsJSON(args.Symbol, deps, args.Reverse, fset, declMap, args.FilePath),
+			Text:     formatDepsJSON(args.Symbol, deps, withLocations, fset, declMap, args.FilePath),
 			ExitCode: 0,
 		})
 
@@ -166,11 +178,11 @@ func depsAction(ctx context.Context, args DepsArgs) result.Result[cli.Output] {
 			header = "Reverse dependencies (users) of " + args.Symbol + ":"
 		}
 		var out string
-		if args.Reverse {
-			// For reverse deps, file:line is the headline information —
-			// "who calls X" is most useful when you can jump straight to
-			// each caller. Render with locations rather than going
-			// through analyze.FormatDependencies (which only knows names).
+		withLocations := args.Reverse || args.Locations
+		if withLocations {
+			// File:line is the headline information for "who calls X" and
+			// is opt-in valuable for forward deps too (e.g. when the user
+			// wants to know where a transitive dep is declared).
 			out = header + "\n\n" + formatDepsWithLocations(deps, fset, declMap, args.FilePath)
 		} else {
 			out = header + "\n\n" + analyze.FormatDependencies(args.Symbol, deps)
