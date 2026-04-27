@@ -5,13 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/token"
+	"strings"
 
 	"github.com/vinodhalaharvi/pureast/pkg/analyze"
 	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
 	"github.com/vinodhalaharvi/pureast/pkg/codegen"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
-	"github.com/vinodhalaharvi/pureast/pkg/index"
-	"github.com/vinodhalaharvi/purekernels/pkg/fold"
 	"github.com/vinodhalaharvi/purekernels/pkg/functor"
 	"github.com/vinodhalaharvi/purekernels/pkg/monoid"
 	"github.com/vinodhalaharvi/purekernels/pkg/result"
@@ -27,7 +26,12 @@ func NewToolExecutor(workers int) *ToolExecutor {
 	return &ToolExecutor{workers: workers}
 }
 
-// SearchSymbolsHandler searches for symbols using fuzzy matching
+// SearchSymbolsHandler searches for symbols using fuzzy matching.
+//
+// The fuzzy parameter is preserved for backward compatibility with
+// existing MCP clients: fuzzy=true allows subsequence/initials matches
+// (e.g. "Hndl" → "Handler"), fuzzy=false restricts to substring matches
+// only (score >= 400 in the underlying scoring).
 func (te *ToolExecutor) SearchSymbolsHandler() Handler {
 	return func(ctx context.Context, req MCPRequest) functor.Concurrent[MCPResponse] {
 		responseMonoid := NewResponseMonoid()
@@ -35,7 +39,6 @@ func (te *ToolExecutor) SearchSymbolsHandler() Handler {
 		return functor.NewConcurrent(
 			responseMonoid,
 			func() MCPResponse {
-				// Parse parameters
 				var params struct {
 					Name      string `json:"name"`
 					Arguments struct {
@@ -51,56 +54,41 @@ func (te *ToolExecutor) SearchSymbolsHandler() Handler {
 					return ErrorResponse(req.ID, InvalidParams, "Invalid parameters")
 				}
 
-				// Load package
 				fset := token.NewFileSet()
 				pkgResult := loadPackage(fset, params.Arguments.Path, te.workers)
-
 				if !pkgResult.IsOk() {
 					return ErrorResponse(req.ID, InternalError, pkgResult.Error().Error())
 				}
-
 				pkgNode := pkgResult.Unwrap()
 
-				// Build index concurrently
-				idx := index.BuildIndex(pkgNode)
-
-				// Search
-				pattern := index.SearchPattern{
-					SymbolPattern: params.Arguments.Pattern,
-					Kind:          params.Arguments.Kind,
-					PackageName:   "",
-				}
-
-				var matches []index.ScoredSymbol
-				if params.Arguments.Fuzzy {
-					matches = index.FuzzySearchIndexConcurrent(pattern, idx, 10)
-				} else {
-					// Regular search - convert to scored
-					entries := index.SearchIndex(pattern, idx)
-					matches = fold.Map(
-						func(e index.SymbolEntry) index.ScoredSymbol {
-							return index.ScoredSymbol{
-								Entry: e,
-								Score: index.FuzzyScore{Matched: true, Score: 1000},
-							}
-						},
-						entries,
-					)
-				}
-
-				// Limit results
 				maxResults := params.Arguments.MaxResults
 				if maxResults <= 0 || maxResults > 100 {
 					maxResults = 20
 				}
-				if len(matches) > maxResults {
-					matches = matches[:maxResults]
+
+				symbols := extract.DiscoverAllSymbols(pkgNode)
+				matches := extract.FuzzySearch(
+					symbols,
+					params.Arguments.Pattern,
+					params.Arguments.Kind,
+					maxResults,
+				)
+
+				// fuzzy=false restricts to substring-or-better matches.
+				// FuzzySearch's scoring guarantees: 1000 = exact, 800 =
+				// prefix, 400-600 = contains, 100-300 = subsequence,
+				// 50 = initials. The 400 cutoff drops subsequence and
+				// initials matches.
+				if !params.Arguments.Fuzzy {
+					filtered := matches[:0]
+					for _, m := range matches {
+						if m.Score >= 400 {
+							filtered = append(filtered, m)
+						}
+					}
+					matches = filtered
 				}
 
-				// Format results
-				text := formatSearchResults(matches)
-
-				// Return CallToolResult format
 				return MCPResponse{
 					JSONRPC: "2.0",
 					ID:      req.ID,
@@ -108,7 +96,7 @@ func (te *ToolExecutor) SearchSymbolsHandler() Handler {
 						"content": []map[string]interface{}{
 							{
 								"type": "text",
-								"text": text,
+								"text": formatSearchResults(matches, pkgNode.Name),
 							},
 						},
 					},
@@ -384,27 +372,18 @@ func loadPackage(fset *token.FileSet, path string, workers int) result.Result[as
 	return result.Ok(pkgNode)
 }
 
-func formatSearchResults(matches []index.ScoredSymbol) string {
+func formatSearchResults(matches []extract.Match, pkgName string) string {
 	if len(matches) == 0 {
 		return "No symbols found."
 	}
 
-	// Use fold to format (categorical!)
-	lines := fold.Map(
-		func(match index.ScoredSymbol) string {
-			return fmt.Sprintf("- %s (%s) [score: %d] in package %s",
-				match.Entry.Name,
-				match.Entry.Kind,
-				match.Score.Score,
-				match.Entry.PackageName)
-		},
-		matches,
-	)
-
-	header := fmt.Sprintf("Found %d symbols:\n\n", len(matches))
-	body := monoid.Reduce(monoid.NewStringJoinMonoid("\n"), lines)
-
-	return header + body
+	var b strings.Builder
+	fmt.Fprintf(&b, "Found %d symbols:\n\n", len(matches))
+	for _, m := range matches {
+		fmt.Fprintf(&b, "- %s (%s) [score: %d] in package %s\n",
+			m.Symbol.Name, m.Symbol.Kind, m.Score, pkgName)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func formatDependencies(symbol string, deps astpkg.Dependencies) string {

@@ -1,15 +1,15 @@
-// cmd/pureast-cobra/commands/search.go
+// cmd/pureast/commands/search.go
 package commands
 
 import (
 	"context"
 	"fmt"
 	"go/token"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/vinodhalaharvi/pureast/pkg/cli"
 	"github.com/vinodhalaharvi/pureast/pkg/extract"
-	"github.com/vinodhalaharvi/pureast/pkg/index"
 	"github.com/vinodhalaharvi/purekernels/pkg/result"
 )
 
@@ -66,6 +66,10 @@ func parseSearchArgs(cmd *cobra.Command, args []string) result.Result[SearchArgs
 	})
 }
 
+// searchAction discovers all symbols, filters with FuzzySearch, and
+// renders the ranked list. There is no separate "index build" step:
+// pureast invocations are one-shot, so building an index just to
+// throw it away after one query was overhead with no payoff.
 func searchAction(ctx context.Context, args SearchArgs) result.Result[cli.Output] {
 	fset := token.NewFileSet()
 	pkgNode, err := extract.ExtractDirectoryConcurrent(fset, args.FilePath, true, 0)
@@ -76,23 +80,15 @@ func searchAction(ctx context.Context, args SearchArgs) result.Result[cli.Output
 		})
 	}
 
-	idx := index.BuildIndex(pkgNode)
-	pattern := index.SearchPattern{
-		SymbolPattern: args.Pattern,
-		Kind:          args.Kind,
+	symbols := extract.DiscoverAllSymbols(pkgNode)
+	matches := extract.FuzzySearch(symbols, args.Pattern, args.Kind, args.MaxResults)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Found %d matches:\n\n", len(matches))
+	for i, m := range matches {
+		fmt.Fprintf(&b, "%d. %s (%s) [score: %d]\n",
+			i+1, m.Symbol.Name, m.Symbol.Kind, m.Score)
 	}
 
-	matches := index.FuzzySearchIndexConcurrent(pattern, idx, 10)
-
-	if len(matches) > args.MaxResults {
-		matches = matches[:args.MaxResults]
-	}
-
-	output := fmt.Sprintf("Found %d matches:\n\n", len(matches))
-	for i, match := range matches {
-		output += fmt.Sprintf("%d. %s (%s) [score: %d]\n",
-			i+1, match.Entry.Name, match.Entry.Kind, match.Score.Score)
-	}
-
-	return result.Ok(cli.Output{Text: output, ExitCode: 0})
+	return result.Ok(cli.Output{Text: b.String(), ExitCode: 0})
 }
