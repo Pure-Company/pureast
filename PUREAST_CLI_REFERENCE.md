@@ -13,7 +13,6 @@ pureast diff      # symbols in files changed since a git ref
 pureast search    # fuzzy symbol search
 pureast list      # enumerate all symbols
 pureast types     # type declarations only
-pureast proto     # generate Protocol Buffer schema
 ```
 
 Path is always positional and defaults to the current directory:
@@ -244,30 +243,6 @@ Examples:
 pureast types ./pkg
 pureast types ./pkg --kind struct
 pureast types ./pkg --kind interface --exported
-```
-
----
-
-## `pureast proto` — Go → Protocol Buffers
-
-Generate `.proto` schema from Go struct definitions.
-
-```
-pureast proto [PATH] [flags]
-```
-
-| Flag             | Default | Effect                                       |
-| ---------------- | ------- | -------------------------------------------- |
-| `--types LIST`   |         | Comma-separated type names (empty = all)     |
-| `-w, --workers`  | 0       | Concurrent workers (0 = NumCPU)              |
-| `-o FILE`        |         | Output file                                  |
-
-Examples:
-
-```bash
-pureast proto ./pkg
-pureast proto ./pkg --types User,Profile
-pureast proto ./pkg -o schema.proto
 ```
 
 ---

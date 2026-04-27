@@ -20,7 +20,6 @@ Common workflows:
   pureast search "Handler" ./pkg    # fuzzy symbol search
   pureast list ./pkg                # enumerate all symbols
   pureast types ./pkg               # type declarations only
-  pureast proto ./pkg               # generate .proto schema
 `,
 	}
 
@@ -32,7 +31,6 @@ Common workflows:
 		NewDepsCommand(),
 		NewDiffCommand(),
 		NewListCommand(),
-		NewProtoCommand(),
 	)
 
 	return rootCmd

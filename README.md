@@ -61,7 +61,6 @@ pureast deps Profile ./examples/app         # dependency analysis
 pureast search "Handler" ./examples/app     # fuzzy symbol search
 pureast list ./examples/app                 # enumerate all symbols
 pureast types ./examples/app                # type declarations only
-pureast proto ./examples/app                # generate .proto schema
 ```
 
 ### Verbs
@@ -74,7 +73,6 @@ pureast proto ./examples/app                # generate .proto schema
 | `search`  | Fuzzy search for symbols by name pattern.                      |
 | `list`    | Enumerate all symbols in a package, optionally grouped.        |
 | `types`   | Extract type declarations only (structs, interfaces, aliases). |
-| `proto`   | Generate Protocol Buffer schema from Go structs.               |
 
 Run `pureast <verb> --help` for the flags specific to each verb.
 
