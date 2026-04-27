@@ -4,7 +4,7 @@ import (
 	"go/format"
 	"strings"
 
-	"github.com/vinodhalaharvi/pureast/pkg/extract"
+	"github.com/Pure-Company/pureast/pkg/extract"
 	"github.com/vinodhalaharvi/purekernels/pkg/fold"
 	"github.com/vinodhalaharvi/purekernels/pkg/monoid"
 )
@@ -114,7 +114,7 @@ func filterRelevantImports(imports []string) []string {
 				return true
 			}
 			// Keep third-party, but exclude project-internal
-			return !strings.Contains(imp, "github.com/vinodhalaharvi/pureast")
+			return !strings.Contains(imp, "github.com/Pure-Company/pureast")
 		},
 		imports,
 	)

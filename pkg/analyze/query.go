@@ -3,7 +3,7 @@
 package analyze
 
 import (
-	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
+	astpkg "github.com/Pure-Company/pureast/pkg/ast"
 )
 
 // DependencyQuery represents different ways to query dependencies

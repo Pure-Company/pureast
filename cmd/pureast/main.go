@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/vinodhalaharvi/pureast/cmd/pureast/commands" // Fixed - no longer cobra
+	"github.com/Pure-Company/pureast/cmd/pureast/commands" // Fixed - no longer cobra
 )
 
 func main() {

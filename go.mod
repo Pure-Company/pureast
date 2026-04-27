@@ -1,4 +1,4 @@
-module github.com/vinodhalaharvi/pureast
+module github.com/Pure-Company/pureast
 
 go 1.25.0
 

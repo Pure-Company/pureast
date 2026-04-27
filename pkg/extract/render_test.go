@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
+	astpkg "github.com/Pure-Company/pureast/pkg/ast"
 )
 
 // renderTestPkg parses a snippet and returns symbols + fset suitable

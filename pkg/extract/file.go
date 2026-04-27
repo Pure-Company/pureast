@@ -5,7 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 
-	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
+	astpkg "github.com/Pure-Company/pureast/pkg/ast"
 	"github.com/vinodhalaharvi/purekernels/pkg/fold"
 	"github.com/vinodhalaharvi/purekernels/pkg/monoid"
 )

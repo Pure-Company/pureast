@@ -25,9 +25,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/vinodhalaharvi/pureast/pkg/analyze"
-	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
-	"github.com/vinodhalaharvi/pureast/pkg/extract"
+	"github.com/Pure-Company/pureast/pkg/analyze"
+	astpkg "github.com/Pure-Company/pureast/pkg/ast"
+	"github.com/Pure-Company/pureast/pkg/extract"
 	"github.com/vinodhalaharvi/purekernels/pkg/functor"
 )
 

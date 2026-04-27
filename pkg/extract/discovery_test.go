@@ -13,7 +13,7 @@ import (
 	"sort"
 	"testing"
 
-	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
+	astpkg "github.com/Pure-Company/pureast/pkg/ast"
 )
 
 // parseToPackage is a small helper that turns a Go source string into

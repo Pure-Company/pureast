@@ -22,8 +22,8 @@ import (
 	"go/token"
 	"strings"
 
-	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
-	"github.com/vinodhalaharvi/pureast/pkg/extract"
+	astpkg "github.com/Pure-Company/pureast/pkg/ast"
+	"github.com/Pure-Company/pureast/pkg/extract"
 )
 
 // dumpRenderOptions controls how a package is summarized for LLM context.

@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/vinodhalaharvi/pureast/pkg/cli"
-	"github.com/vinodhalaharvi/pureast/pkg/extract"
+	"github.com/Pure-Company/pureast/pkg/cli"
+	"github.com/Pure-Company/pureast/pkg/extract"
 )
 
 type SearchArgs struct {

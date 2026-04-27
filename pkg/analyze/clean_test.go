@@ -4,7 +4,7 @@ package analyze
 import (
 	"testing"
 
-	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
+	astpkg "github.com/Pure-Company/pureast/pkg/ast"
 )
 
 // fakeDeclMap returns a decl map seeded with the given names. The

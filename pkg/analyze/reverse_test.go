@@ -13,8 +13,8 @@ import (
 	"sort"
 	"testing"
 
-	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
-	"github.com/vinodhalaharvi/pureast/pkg/extract"
+	astpkg "github.com/Pure-Company/pureast/pkg/ast"
+	"github.com/Pure-Company/pureast/pkg/extract"
 )
 
 // buildGraph parses the given source, builds a decl map, and wraps it

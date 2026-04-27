@@ -18,11 +18,11 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/vinodhalaharvi/pureast/pkg/analyze"
-	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
-	"github.com/vinodhalaharvi/pureast/pkg/cli"
-	"github.com/vinodhalaharvi/pureast/pkg/codegen"
-	"github.com/vinodhalaharvi/pureast/pkg/extract"
+	"github.com/Pure-Company/pureast/pkg/analyze"
+	astpkg "github.com/Pure-Company/pureast/pkg/ast"
+	"github.com/Pure-Company/pureast/pkg/cli"
+	"github.com/Pure-Company/pureast/pkg/codegen"
+	"github.com/Pure-Company/pureast/pkg/extract"
 )
 
 type DepsArgs struct {

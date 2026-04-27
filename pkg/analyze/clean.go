@@ -40,7 +40,7 @@ package analyze
 import (
 	"strings"
 
-	astpkg "github.com/vinodhalaharvi/pureast/pkg/ast"
+	astpkg "github.com/Pure-Company/pureast/pkg/ast"
 )
 
 // CleanDependencies returns deps with parser-leak entries removed.

@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"syscall"
 
-	"github.com/vinodhalaharvi/pureast/pkg/mcp"
+	"github.com/Pure-Company/pureast/pkg/mcp"
 )
 
 func main() {

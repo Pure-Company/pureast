@@ -37,7 +37,7 @@ Everything composes via **monoids and folds**, keeping it **pure, deterministic,
 ## 📦 Installation
 
 ```bash
-go install github.com/vinodhalaharvi/pureast/cmd/pureast@latest
+go install github.com/Pure-Company/pureast/cmd/pureast@latest
 ```
 
 Or clone locally:
