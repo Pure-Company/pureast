@@ -13,10 +13,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/Pure-Company/pureast/pkg/cli"
 	"github.com/Pure-Company/pureast/pkg/codegen"
 	"github.com/Pure-Company/pureast/pkg/extract"
+	"github.com/spf13/cobra"
 )
 
 type TypesArgs struct {

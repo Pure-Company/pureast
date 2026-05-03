@@ -3,10 +3,10 @@
 // Type-safe command builder around Cobra. Every verb runs through
 // the same shape:
 //
-//   1. ParseArgs: turn (cobra.Command, []string) into a typed args
-//      struct, or return an error explaining what's wrong.
-//   2. Action: take the typed args and return Output (which goes to
-//      stdout) or an error (which goes to stderr).
+//  1. ParseArgs: turn (cobra.Command, []string) into a typed args
+//     struct, or return an error explaining what's wrong.
+//  2. Action: take the typed args and return Output (which goes to
+//     stdout) or an error (which goes to stderr).
 //
 // The signatures use plain (T, error) rather than a Result wrapper
 // because Go's idioms expect that shape, and because errors here
