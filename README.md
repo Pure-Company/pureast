@@ -1,5 +1,11 @@
 # 🧬 **PureAST**
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/Pure-Company/pureast.svg)](https://pkg.go.dev/github.com/Pure-Company/pureast)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Pure-Company/pureast)](https://goreportcard.com/report/github.com/Pure-Company/pureast)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/Pure-Company/pureast)](https://github.com/Pure-Company/pureast/blob/main/go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Pure-Company/pureast/pulls)
+
 **Functorial AST Extraction and Code Generation Toolkit**
 
 🧠 The MIT + Functorial Brain-Melt License (FBML)
@@ -78,6 +84,34 @@ pureast types ./examples/app                # [deprecated] use 'dump --kind' ins
 
 Run `pureast <verb> --help` for the flags specific to each verb.
 
+### Module modes
+
+In addition to local paths, pureast can resolve **any public Go module**
+on demand. These flags work with every verb (and with bare `pureast`):
+
+| Flag        | Purpose                                                                |
+| ----------- | ---------------------------------------------------------------------- |
+| `--module`  | Dump a single Go module by path (uses `go mod download` under the hood).|
+| `--gomod`   | Dump every direct dependency in a `go.mod` file. Indirect deps are skipped.|
+
+```bash
+# Single remote module — no clone, no manual setup
+pureast --module github.com/spf13/cobra
+pureast --module github.com/gin-gonic/gin@v1.10.0
+pureast --module github.com/spf13/cobra/doc          # sub-package
+
+# Every direct dependency in a project, in one shot
+pureast --gomod ./go.mod
+pureast --gomod ./go.mod --kind interface            # contracts only
+pureast --gomod ./go.mod --skip-module github.com/aws/aws-sdk-go-v2
+pureast --gomod ./go.mod --only-module github.com/redis/go-redis/v9
+```
+
+Module resolution piggybacks on `go mod download`, so `GOPROXY`,
+`GOPRIVATE`, vendoring, and `replace` directives all work the way Go
+already configures them. The first call hits the network; subsequent
+calls for the same `(module, version)` are filesystem-cache hits.
+
 ---
 
 ## 🧠 Example Workflows
@@ -96,6 +130,37 @@ pureast dump ./examples/app --max-tokens 4000        # fit a token budget
 rather than slicing through one, so the output is always syntactically
 complete Go (matters when the LLM re-parses it). Available on `dump`,
 `extract`, and `diff`.
+
+### 🪐 Context compression for an entire project (`--gomod`)
+
+`--gomod` reads your project's `go.mod`, dumps every direct dependency
+in one pass, and emits a single LLM-ready bundle. Indirect deps are
+skipped automatically — what you get is your project's *actual API
+surface*, not its transitive plumbing.
+
+```bash
+# Compress every direct dep in the project — typical result is 100×
+# smaller than raw source while preserving the full callable surface.
+pureast --gomod ./go.mod --kind interface > deps.md
+
+# Pipe straight into Claude Code (or any LLM CLI that reads stdin)
+pureast --gomod ./go.mod --exported | \
+  claude -p "review these dependencies for security advisories or staleness"
+
+# Generate a feature against the actual dep contracts — no hallucinated APIs
+pureast --gomod ./go.mod --exported | \
+  claude -p "implement a JWT-validated session cached in Redis with 15min TTL"
+
+# Narrow the context — whitelist or blacklist specific deps
+pureast --gomod ./go.mod --only-module github.com/redis/go-redis/v9
+pureast --gomod ./go.mod --skip-module github.com/spf13/cobra
+```
+
+A typical Go service has 5–15 direct deps totaling millions of lines
+of source. Through `pureast --gomod --kind interface`, that same
+surface area lands at ~10k tokens — small enough for one prompt, large
+enough that the LLM can generate code grounded in real signatures
+rather than guesses from training data.
 
 ### 🧱 Extract a symbol with its dependencies
 
