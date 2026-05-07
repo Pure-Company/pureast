@@ -2,8 +2,13 @@
 package commands
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/Pure-Company/pureast/pkg/extract"
 )
 
 func NewRootCommand() *cobra.Command {
@@ -27,6 +32,14 @@ With no subcommand, pureast dumps every symbol in the given package
   pureast .                         # dump current directory
   pureast ./pkg                     # dump a specific package
 
+You can also point pureast at any public Go module via --module
+(uses ` + "`go mod download`" + ` under the hood, so GOPROXY/auth/cache
+all work as configured):
+
+  pureast --module github.com/spf13/cobra
+  pureast --module github.com/gin-gonic/gin@v1.10.0
+  pureast --module github.com/spf13/cobra/doc       # sub-package
+
 Common workflows:
   pureast dump ./pkg                # every symbol, signatures only
   pureast extract User ./pkg        # one symbol with transitive deps
@@ -41,17 +54,46 @@ Common workflows:
 		// unknown command.
 		Args: cobra.MaximumNArgs(1),
 		// With no args, fall back to help (preserves the existing
-		// behavior of bare `pureast`). With a path, delegate to the
-		// dump command — same flag set, same output.
+		// behavior of bare `pureast`) — UNLESS the user passed
+		// --module, in which case there's no positional path to
+		// give but they clearly want us to operate on something.
+		// Forward to dump in that case; resolvePathFlag will turn
+		// --module into a real directory.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
+			mod, _ := cmd.Flags().GetString("module")
+			if len(args) == 0 && mod == "" {
 				return cmd.Help()
 			}
-			// Forward the positional path (and any flags the user
-			// passed at the root level — e.g. --kind, --exported)
-			// to dump's RunE. dumpCmd's flags are mirrored onto the
-			// root below, so they share storage: parseDumpArgs reads
-			// the same flag values cobra wrote during root parsing.
+			// Forward to dump's RunE. dumpCmd's flags are mirrored
+			// onto the root below, so they share storage:
+			// parseDumpArgs reads the same flag values cobra wrote
+			// during root parsing.
+			//
+			// `--module` is trickier: it's a persistent root flag,
+			// but cobra only merges persistent flags into a child's
+			// flag set during its own dispatch — and we're calling
+			// RunE directly here, bypassing dispatch. Rather than
+			// teaching dumpCmd about --module separately, we resolve
+			// it once at the root and synthesize a positional path,
+			// which is how every verb already consumes location info.
+			if mod != "" && len(args) == 0 {
+				res, err := extract.ResolveModule(mod)
+				if err != nil {
+					return fmt.Errorf("--module %s: %w", mod, err)
+				}
+				if res.SubPath != "" {
+					fmt.Fprintf(os.Stderr,
+						"resolved %s -> %s@%s (sub-package %s) at %s\n",
+						mod, res.ModulePath, res.Version, res.SubPath, res.Dir)
+				} else {
+					fmt.Fprintf(os.Stderr,
+						"resolved %s -> %s@%s at %s\n",
+						mod, res.ModulePath, res.Version, res.Dir)
+				}
+				args = []string{res.Dir}
+			} else if mod != "" && len(args) > 0 {
+				return fmt.Errorf("--module and a positional PATH are mutually exclusive")
+			}
 			dumpCmd.SetContext(cmd.Context())
 			return dumpCmd.RunE(dumpCmd, args)
 		},
@@ -91,6 +133,16 @@ Common workflows:
 		}
 		rootCmd.Flags().AddFlag(f)
 	})
+
+	// --module is a *persistent* flag on root, which means every
+	// subcommand inherits it automatically. The shared resolvePath
+	// / resolvePathFlag helpers in helpers.go check for it before
+	// falling back to positional/--file/CWD logic, so adding it here
+	// is enough to give every verb (dump, extract, deps, diff, list,
+	// search, types) module-resolution support for free.
+	rootCmd.PersistentFlags().String("module", "",
+		"Resolve a Go module via `go mod download` (e.g. github.com/foo/bar@v1.2.3). "+
+			"Mutually exclusive with positional PATH.")
 
 	return rootCmd
 }
