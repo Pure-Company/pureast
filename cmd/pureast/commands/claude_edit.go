@@ -313,9 +313,12 @@ func assembleContext(ctx context.Context, args ClaudeEditArgs) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("--gomod %s: %w", args.GomodPath, err)
 		}
-		sb.WriteString("// === SOURCE: --gomod ")
-		sb.WriteString(args.GomodPath)
-		sb.WriteString(" ===\n")
+		// gomodAction already injects per-module headers with module
+		// paths inline (// MODULE: github.com/...) — they double as
+		// import-path hints for Claude. So we just wrap with the
+		// outer source header and don't try to compute a single
+		// import path (there are N of them).
+		writeSourceHeader(&sb, "--gomod "+args.GomodPath, "")
 		sb.WriteString(out.Text)
 		sb.WriteString("\n")
 	}
@@ -330,15 +333,21 @@ func assembleContext(ctx context.Context, args ClaudeEditArgs) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("--pkg %s: %w", pkg, err)
 		}
-		sb.WriteString("// === SOURCE: --pkg ")
-		sb.WriteString(pkg)
-		sb.WriteString(" ===\n")
+		// Resolve the import path automatically from the enclosing
+		// go.mod. This is the fix for "Claude wrote import \"../repo\""
+		// — without this hint, the model has no way to know the
+		// canonical module-qualified path. With it, the path is
+		// right next to the signatures.
+		impPath, _ := extract.ImportPathFor(abs)
+		writeSourceHeader(&sb, "--pkg "+pkg, impPath)
 		sb.WriteString(out.Text)
 		sb.WriteString("\n")
 	}
 
 	// 3) --module (remote modules). Each is resolved through
-	//    ResolveModule (the same path that --module uses).
+	//    ResolveModule (the same path that --module uses). The
+	//    module path doubles as the import path — modulo any
+	//    sub-package the user specified, which we already resolved.
 	for _, modSpec := range args.Modules {
 		res, err := extract.ResolveModule(modSpec)
 		if err != nil {
@@ -348,9 +357,13 @@ func assembleContext(ctx context.Context, args ClaudeEditArgs) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("--module %s: %w", modSpec, err)
 		}
-		sb.WriteString("// === SOURCE: --module ")
-		sb.WriteString(modSpec)
-		sb.WriteString(fmt.Sprintf(" (%s@%s) ===\n", res.ModulePath, res.Version))
+		impPath := res.ModulePath
+		if res.SubPath != "" {
+			impPath = strings.TrimSuffix(impPath, "/") + "/" + res.SubPath
+		}
+		writeSourceHeader(&sb,
+			fmt.Sprintf("--module %s (%s@%s)", modSpec, res.ModulePath, res.Version),
+			impPath)
 		sb.WriteString(out.Text)
 		sb.WriteString("\n")
 	}
@@ -370,32 +383,55 @@ func assembleContext(ctx context.Context, args ClaudeEditArgs) (string, error) {
 		// could narrow this to just the symbol + its deps; for now
 		// the broader package context is fine and preserves the
 		// "use exact types" guarantee.
-		var path string
+		var (
+			path    string
+			impPath string
+		)
 		if isLikelyModuleSpec(loc) {
 			res, err := extract.ResolveModule(loc)
 			if err != nil {
 				return "", fmt.Errorf("--symbol %s: resolve %s: %w", symSpec, loc, err)
 			}
 			path = res.Dir
+			impPath = res.ModulePath
+			if res.SubPath != "" {
+				impPath = strings.TrimSuffix(impPath, "/") + "/" + res.SubPath
+			}
 		} else {
 			abs, err := filepath.Abs(loc)
 			if err != nil {
 				return "", fmt.Errorf("--symbol %s: %w", symSpec, err)
 			}
 			path = abs
+			impPath, _ = extract.ImportPathFor(abs)
 		}
 		out, err := dumpAction(ctx, dumpArgsFor(path))
 		if err != nil {
 			return "", fmt.Errorf("--symbol %s: %w", symSpec, err)
 		}
-		sb.WriteString("// === SOURCE: --symbol ")
-		sb.WriteString(symSpec)
-		sb.WriteString(" ===\n")
+		writeSourceHeader(&sb, "--symbol "+symSpec, impPath)
 		sb.WriteString(out.Text)
 		sb.WriteString("\n")
 	}
 
 	return sb.String(), nil
+}
+
+// writeSourceHeader emits the section delimiter that introduces each
+// context source in the assembled bundle. When importPath is non-empty,
+// it's surfaced prominently so Claude uses the right import statement
+// instead of guessing (or, worse, emitting a relative-path import that
+// isn't even legal Go). The phrasing is direct because models read it.
+func writeSourceHeader(sb *strings.Builder, sourceLabel, importPath string) {
+	sb.WriteString("// === SOURCE: ")
+	sb.WriteString(sourceLabel)
+	sb.WriteString(" ===\n")
+	if importPath != "" {
+		sb.WriteString("// IMPORT PATH: ")
+		sb.WriteString(importPath)
+		sb.WriteString("\n")
+		sb.WriteString("// (when importing this package, use the path above — NOT a relative path)\n")
+	}
 }
 
 // isLikelyModuleSpec mirrors the heuristic in claude-with-stdlib: if
