@@ -170,6 +170,7 @@ Common workflows:
 		NewDiffCommand(),
 		NewListCommand(),
 		NewClaudeEditCommand(),
+		NewScaffoldCommand(),
 	)
 
 	// Mirror dump's flags onto the root so `pureast . --kind func`
