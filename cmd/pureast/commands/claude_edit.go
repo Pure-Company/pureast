@@ -191,10 +191,13 @@ func parseClaudeEditArgs(cmd *cobra.Command, args []string) (ClaudeEditArgs, err
 		return ClaudeEditArgs{}, fmt.Errorf(
 			"invalid --kind %q (want: all|type|struct|interface|func|method|const|var)", kind)
 	}
-	if gomodPath == "" && len(modules) == 0 && len(pkgs) == 0 && len(symbols) == 0 {
-		return ClaudeEditArgs{}, fmt.Errorf(
-			"need at least one context source (--gomod, --module, --pkg, or --symbol)")
-	}
+	// Note: zero context sources is allowed. This is the "seed file"
+	// case — defining a new type or interface that doesn't depend on
+	// anything beyond stdlib, where the task description is the entire
+	// specification. The cache key still works (just hashes task +
+	// empty context), and the prompt sent to Claude is well-formed
+	// (the Context section becomes empty but the rest of the prompt
+	// remains intact).
 
 	// Sort the slice-typed sources so identical directives with
 	// different argument orders produce identical hashes. The hash
@@ -522,10 +525,15 @@ func buildPrompt(args ClaudeEditArgs, bundle string) string {
 	sb.WriteString("2. The current contents of the file you're editing (may be empty on first run).\n")
 	sb.WriteString("3. The task: what to produce or change.\n\n")
 
-	sb.WriteString("## Context (signatures only — use these EXACT types)\n\n")
-	sb.WriteString("```go\n")
-	sb.WriteString(strings.TrimRight(bundle, "\n"))
-	sb.WriteString("\n```\n\n")
+	if strings.TrimSpace(bundle) == "" {
+		sb.WriteString("## Context\n\n")
+		sb.WriteString("(no external context — this is a seed file. Use only stdlib and what the task describes.)\n\n")
+	} else {
+		sb.WriteString("## Context (signatures only — use these EXACT types)\n\n")
+		sb.WriteString("```go\n")
+		sb.WriteString(strings.TrimRight(bundle, "\n"))
+		sb.WriteString("\n```\n\n")
+	}
 
 	current, err := os.ReadFile(args.OutputFile)
 	if err == nil && len(current) > 0 {
