@@ -15,17 +15,23 @@
 
 ## 🚀 Overview
 
-**PureAST** is a **pure functional** Go library and CLI tool that performs **AST extraction, dependency analysis, and code generation** — all built on top of **PureKernels** (monoids, folds, and functors).
+**PureAST** is a **pure functional** Go library and CLI tool for
+**AST extraction, dependency analysis, and LLM-assisted code generation**
+— all built on top of **PureKernels** (monoids, folds, and functors).
 
-It lets you:
+Two halves:
 
-* Extract **structs**, **interfaces**, and **functions** from any Go package.
-* Analyze **dependencies** between types, functions, and imports.
-* Generate **minimal compilable subgraphs** for specific symbols.
-* Output **compact, LLM-friendly code contexts**.
-* Produce **DOT graphs** for visualization.
+* **Read your code.** Extract structs, interfaces, functions; analyze
+  dependencies; compress dependencies into compact LLM-ready bundles
+  (`--gomod`, `--module`); generate dependency graphs.
 
-Everything composes via **monoids and folds**, keeping it **pure, deterministic, and composable**.
+* **Write your code.** Generate source files, Makefiles, Dockerfiles, and
+  compose files from a single YAML manifest (`scaffold` + `claude-edit`),
+  with a content-addressed cache that preserves hand edits between
+  regenerations.
+
+Everything composes via **monoids and folds**, keeping it **pure,
+deterministic, and composable**.
 
 ---
 
@@ -72,15 +78,17 @@ pureast types ./examples/app                # [deprecated] use 'dump --kind' ins
 
 ### Verbs
 
-| Verb      | Purpose                                                        |
-| --------- | -------------------------------------------------------------- |
-| `dump`    | Compact dump of every symbol — the LLM-context flagship.       |
-| `extract` | Extract one symbol plus its transitive dependencies.           |
-| `deps`    | Forward or reverse dependency analysis (`--reverse`, `--locations`).|
-| `diff`    | Symbols whose lines changed since a git ref (PR-review use).   |
-| `search`  | Fuzzy search for symbols by name pattern.                      |
-| `list`    | Enumerate all symbols in a package, optionally grouped.        |
-| `types`   | **Deprecated**: use `dump --kind struct\|interface` instead.    |
+| Verb           | Purpose                                                        |
+| -------------- | -------------------------------------------------------------- |
+| `dump`         | Compact dump of every symbol — the LLM-context flagship.       |
+| `extract`      | Extract one symbol plus its transitive dependencies.           |
+| `deps`         | Forward or reverse dependency analysis (`--reverse`, `--locations`).|
+| `diff`         | Symbols whose lines changed since a git ref (PR-review use).   |
+| `search`       | Fuzzy search for symbols by name pattern.                      |
+| `list`         | Enumerate all symbols in a package, optionally grouped.        |
+| `claude-edit`  | LLM-driven codegen with a content-addressed cache. Designed for `//go:generate`. |
+| `scaffold`     | Materialize a project skeleton from a YAML manifest.           |
+| `types`        | **Deprecated**: use `dump --kind struct\|interface` instead.    |
 
 Run `pureast <verb> --help` for the flags specific to each verb.
 
@@ -227,6 +235,206 @@ pureast list ./examples/app --grouped=false          # flat list
 
 ---
 
+## 🛠 Project codegen — `scaffold` + `claude-edit`
+
+PureAST also drives **LLM-assisted code generation** through two cooperating
+verbs that fit Go's existing `//go:generate` workflow. The split:
+
+* **`scaffold`** turns a YAML manifest into a tree of `gen.go` files. Pure
+  structure, no LLM. Deterministic — same manifest always produces the same
+  directives.
+* **`claude-edit`** runs inside each `gen.go`'s `//go:generate` directive,
+  feeds Claude the project's actual API surface (via `--pkg`, `--module`,
+  `--gomod`, `--symbol`), and writes the resulting source file with a
+  content-addressed cache header.
+
+Two phases, two cache disciplines, both reviewable as ordinary diffs.
+
+```bash
+pureast scaffold                              # phase 1: structure (no LLM)
+go generate -tags ignore ./...                # phase 2: content (LLM, cached)
+```
+
+The `-tags ignore` is required because each `gen.go` is built with
+`//go:build ignore` so it never compiles into the final binary — only
+`go generate` sees it, and only when the tag is requested.
+
+### `claude-edit` — LLM codegen with a cache that respects hand edits
+
+`claude-edit` is the verb you put after `//go:generate`:
+
+```go
+//go:generate pureast claude-edit --task "..." --pkg ../repo --module github.com/redis/go-redis/v9 --kind interface --output user_cache.go
+```
+
+It assembles a context bundle from one or more sources, computes
+`sha256(version, task, context)`, and only invokes Claude when that key
+differs from the one stored in the output file's header. Hand edits are
+preserved by the cache: when nothing upstream has changed, regeneration
+is a no-op and your edits stay.
+
+| Flag                | Purpose                                                                |
+| ------------------- | ---------------------------------------------------------------------- |
+| `--task TEXT`       | What you want produced. Required.                                      |
+| `--output PATH`     | Where to write. Comment syntax adapts: `//` for `.go`, `#` for Make/Docker/YAML. |
+| `--pkg PATH`        | Local package as context (repeatable). Import path injected automatically from `go.mod`. |
+| `--module SPEC`     | Remote module as context (repeatable). Resolved via `go mod download`. |
+| `--gomod PATH`      | Every direct dep in a `go.mod`.                                        |
+| `--symbol NAME:LOC` | A single symbol with its deps (repeatable).                            |
+| `--kind`, `--exported`, `--max-tokens`, `--skip-module`, `--only-module` | Filters apply to all sources. |
+| `--model NAME`      | Pass-through to `claude -p --model`. Use `opus` for the best results.  |
+| `--dry-run`         | Print the assembled prompt; don't call Claude.                         |
+
+Direct CLI use (no `gen.go` required):
+
+```bash
+pureast claude-edit \
+  --task "Implement Cache wrapping repo.UserRepo: Redis-backed, 5min TTL." \
+  --pkg ../repo \
+  --module github.com/redis/go-redis/v9 \
+  --kind interface \
+  --output user_cache.go \
+  --model opus
+```
+
+Run twice; the second run cache-hits and exits without calling Claude. Edit
+the file by hand; the third run still cache-hits because nothing upstream
+changed. Change the task or the underlying interface; the cache misses and
+Claude regenerates.
+
+The model occasionally produces code that doesn't compile — scope errors,
+wrong import paths, missing braces. PureAST does not run `go build` on the
+output. **You own the file. Review every regeneration as you would any PR
+diff, and hand-edit fixes when needed.** The cache then preserves your
+fixes until something upstream actually moves.
+
+### `scaffold` — a YAML manifest is the source of truth
+
+`scaffold` reads `pureast.yaml` (or another file via `--manifest`) and
+produces one `gen.go` per package described:
+
+```yaml
+# pureast.yaml at the project root
+module: github.com/example/shortener   # optional sanity-check vs go.mod
+
+packages:
+  - path: internal/domain
+    package: domain
+    doc: Core domain types — the seed of the project.
+    files:
+      - output: link.go
+        task: "Define a Link struct with ID, LongURL, CreatedAt..."
+        model: opus
+
+  - path: internal/repo
+    package: repo
+    files:
+      - output: link_repo.go
+        task: "Define LinkRepo interface for persisting domain.Link..."
+        sources:
+          - pkg: ../domain
+        kind: interface
+        model: opus
+
+      - output: postgres.go
+        task: "PostgresLinkRepo implementing LinkRepo using pgxpool.Pool..."
+        sources:
+          - pkg: .
+          - pkg: ../domain
+          - module: github.com/jackc/pgx/v5/pgxpool
+        model: opus
+
+  # Build files — one tools/gen package emits Makefile, Dockerfile, compose
+  # at the project root. --output walks up via "../../" and the cache
+  # header uses '#' instead of '//'.
+  - path: tools/gen
+    package: gen
+    files:
+      - output: ../../Makefile
+        task: "Makefile with build/test/lint/run/clean targets..."
+        sources:
+          - gomod: ../../go.mod
+        kind: interface
+        model: opus
+
+      - output: ../../Dockerfile
+        task: "Multi-stage Dockerfile, golang:1.22-alpine builder..."
+        sources:
+          - gomod: ../../go.mod
+        kind: interface
+        model: opus
+
+      - output: ../../docker-compose.yml
+        task: "docker-compose.yml for local dev with postgres, redis..."
+        sources:
+          - gomod: ../../go.mod
+        kind: interface
+        model: opus
+```
+
+Run scaffold:
+
+```bash
+pureast scaffold
+#   created  cmd/shortener/gen.go
+#   created  internal/domain/gen.go
+#   created  internal/repo/gen.go
+#   created  tools/gen/gen.go
+#   ...
+```
+
+Each `gen.go` is build-ignored and contains a `//go:generate
+pureast claude-edit ...` directive per output file. Validation catches
+common mistakes before any code runs (missing tasks, paths escaping the
+project root, duplicate outputs, `gen.go` reserved name, invalid Go
+identifiers, unknown YAML fields like `pacakge:`).
+
+### End-to-end workflow
+
+```bash
+# 0. one go.mod and one pureast.yaml at the project root
+cat > go.mod <<EOF
+module github.com/example/myproject
+go 1.22
+EOF
+# (author pureast.yaml describing your packages and their generation tasks)
+
+# 1. lay down the structure
+pureast scaffold
+
+# 2. fill in the source files
+go generate -tags ignore ./...
+
+# 3. build files often need a populated go.mod, so run the standard tidy
+go mod tidy
+
+# 4. regenerate the build files now that go.mod has direct deps
+go generate -tags ignore ./tools/...
+
+# 5. compile, hand-fix any LLM glitches, ship
+go build ./...
+```
+
+The whole pipeline is reproducible. Every artifact (`pureast.yaml`,
+each `gen.go`, every generated source file with its cache header)
+lives in version control. The only non-deterministic step — the
+Claude call — is gated by a cache so that re-running on a clean
+checkout produces no API calls when inputs are unchanged.
+
+### What this is *not*
+
+* Not a substitute for code review. Generated files commit like any
+  other source; reviewers see the diff and approve or request changes.
+* Not a closed-loop "make it compile" tool. PureAST writes whatever
+  Claude returns (after stripping markdown fences) and lets the user
+  catch compile errors with `go build`. A multi-agent retry loop is
+  out of scope for this project.
+* Not Go-only on the output side. `claude-edit` adapts comment syntax
+  for Makefile, Dockerfile, YAML, shell, TOML, and similar text
+  formats — any text file becomes a generation target.
+
+---
+
 ## 🤖 Use with Claude (MCP)
 
 PureAST ships with an [MCP](https://modelcontextprotocol.io) server so Claude
@@ -275,13 +483,15 @@ context-bounded models.
 ```
 pureast/
 ├── cmd/pureast/          # CLI entry point + subcommands
-│   └── commands/         # one file per verb
+│   └── commands/         # one file per verb (dump, extract, deps, diff,
+│                         #   search, list, claude-edit, scaffold, types)
 ├── cmd/pureast-mcp/      # MCP server entry point
 ├── pkg/
 │   ├── ast/              # Core AST node structures & visitors
 │   ├── extract/          # AST extraction (pure functional)
 │   ├── analyze/          # Dependency graph analysis
 │   ├── codegen/          # Code & report generation
+│   ├── scaffold/         # Manifest schema + scaffolder for project skeletons
 │   ├── cli/              # Type-safe command builder
 │   ├── mcp/              # MCP server: tool handlers + JSON-RPC protocol
 │   └── ...               # Composition via monoids and folds
