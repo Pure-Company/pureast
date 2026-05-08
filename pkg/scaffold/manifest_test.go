@@ -144,16 +144,16 @@ packages:
 			"duplicate path",
 		},
 		{
-			"output is a path not a filename",
+			"output escaping project root",
 			`
 packages:
   - path: a
     package: a
     files:
-      - output: sub/x.go
+      - output: ../../../etc/passwd
         task: "x"
 `,
-			"output must be a filename",
+			"escapes project root",
 		},
 		{
 			"output is gen.go",
@@ -179,7 +179,7 @@ packages:
       - output: x.go
         task: "y"
 `,
-			"duplicate output",
+			"duplicate resolved output",
 		},
 		{
 			"missing task",
@@ -309,6 +309,28 @@ packages:
 	}
 	if *f.ExportedOnly {
 		t.Error("expected ExportedOnly == false, got true")
+	}
+}
+
+func TestValidate_AcceptsRelativeOutputPaths(t *testing.T) {
+	// Outputs that walk out of the package directory are allowed as
+	// long as they stay within the project root. This is the meta-
+	// generator pattern — directives in tools/gen/gen.go producing
+	// Makefile/Dockerfile at the project root.
+	path := writeManifest(t, `
+packages:
+  - path: tools/gen
+    package: gen
+    files:
+      - output: ../../Makefile
+        task: "build/test/lint targets"
+      - output: ../../Dockerfile
+        task: "multi-stage build"
+      - output: ../../docker-compose.yml
+        task: "local dev compose"
+`)
+	if _, err := LoadManifest(path); err != nil {
+		t.Errorf("expected accept, got: %v", err)
 	}
 }
 

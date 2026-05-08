@@ -173,25 +173,39 @@ func (m *Manifest) Validate() error {
 
 		seenOutput := make(map[string]int, len(pkg.Files))
 		for j, f := range pkg.Files {
+			// output is a path relative to the package's directory.
+			// Most files use a plain filename ("user.go"); meta-files
+			// like Makefile/Dockerfile/compose.yml legitimately walk
+			// out via "../../Makefile" to land at the project root.
+			//
+			// We require: not absolute, and the joined path stays
+			// within the project root. The latter prevents
+			// pureast.yaml from being a path-traversal vector.
 			if f.Output == "" {
 				return fmt.Errorf("packages[%d] (%s).files[%d]: output is required",
 					i, pkg.Path, j)
 			}
-			// output must be a plain filename, not a path
-			if strings.ContainsAny(f.Output, "/\\") {
-				return fmt.Errorf("packages[%d] (%s).files[%d] (%s): output must be a filename, not a path",
+			if filepath.IsAbs(f.Output) {
+				return fmt.Errorf("packages[%d] (%s).files[%d] (%s): output must be relative, not absolute",
 					i, pkg.Path, j, f.Output)
 			}
+			// Resolve (package-path)/(output) and clean. If the result
+			// starts with "..", the output escapes the project root.
+			combined := filepath.Clean(filepath.Join(pkg.Path, f.Output))
+			if strings.HasPrefix(combined, "..") || combined == ".." {
+				return fmt.Errorf("packages[%d] (%s).files[%d] (%s): output escapes project root (resolves to %s)",
+					i, pkg.Path, j, f.Output, combined)
+			}
 			// gen.go is reserved — that's the file scaffold itself produces.
-			if f.Output == "gen.go" {
+			if filepath.Base(f.Output) == "gen.go" {
 				return fmt.Errorf("packages[%d] (%s).files[%d]: 'gen.go' is reserved (it's the file scaffold itself produces)",
 					i, pkg.Path, j)
 			}
-			if prev, ok := seenOutput[f.Output]; ok {
-				return fmt.Errorf("packages[%d] (%s).files[%d] (%s): duplicate output; previously declared at files[%d]",
-					i, pkg.Path, j, f.Output, prev)
+			if prev, ok := seenOutput[combined]; ok {
+				return fmt.Errorf("packages[%d] (%s).files[%d] (%s): duplicate resolved output %s; previously declared at files[%d]",
+					i, pkg.Path, j, f.Output, combined, prev)
 			}
-			seenOutput[f.Output] = j
+			seenOutput[combined] = j
 
 			if f.Task == "" {
 				return fmt.Errorf("packages[%d] (%s).files[%d] (%s): task is required",

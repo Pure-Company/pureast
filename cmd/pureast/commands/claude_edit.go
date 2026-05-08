@@ -60,10 +60,47 @@ import (
 // is the standard "schema migration via versioned key" trick.
 const cacheVersion = "v1"
 
-// headerKeyPrefix is the line prefix pureast looks for to find the
-// cached hash in an existing output file. Stable across versions —
-// only the value after the colon changes when cacheVersion does.
-const headerKeyPrefix = "// pureast-cache-key: "
+// commentPrefixFor returns the line-comment syntax to use for a given
+// output file. Pureast's cache header sits at the top of every
+// generated file as a small block of comments; the prefix character
+// has to match the target file's language or the file is corrupted
+// the moment it's written.
+//
+// We key on file extension and known basenames. Default is `#` because
+// the largest set of likely outputs (Make, Docker, YAML, shell,
+// Python, Ruby, Terraform, Nginx) all use `#`. Go is the notable
+// outlier with `//`. Add other languages as their need arises.
+func commentPrefixFor(path string) string {
+	base := filepath.Base(path)
+	switch {
+	case strings.HasSuffix(path, ".go"):
+		return "// "
+	case base == "Makefile" || base == "makefile" || strings.HasSuffix(path, ".mk"):
+		return "# "
+	case base == "Dockerfile" || strings.HasSuffix(path, ".dockerfile"):
+		return "# "
+	case strings.HasSuffix(path, ".yml") || strings.HasSuffix(path, ".yaml"):
+		return "# "
+	case strings.HasSuffix(path, ".sh") || strings.HasSuffix(path, ".bash"):
+		return "# "
+	case strings.HasSuffix(path, ".toml"):
+		return "# "
+	default:
+		// Conservative default: `#` works for most config-language
+		// formats. If the user's outputting something exotic (CSS,
+		// HTML, SQL with `--` comments), they'll need to add a case
+		// or accept that the cache header may be syntactically
+		// awkward in their target.
+		return "# "
+	}
+}
+
+// cacheKeyHeaderLine returns the line prefix that readCachedKey
+// scans for. Combines the file's comment syntax with the fixed
+// pureast-cache-key marker.
+func cacheKeyHeaderLine(commentPrefix string) string {
+	return commentPrefix + "pureast-cache-key: "
+}
 
 // ClaudeEditArgs is the typed argument bundle for the verb. Built from
 // cobra flags by parseClaudeEditArgs and consumed by claudeEditAction.
@@ -486,21 +523,26 @@ func shortHash(key string) string {
 }
 
 // readCachedKey scans the first ~30 lines of `path` for the cache-key
-// header line. Returns (key, true) on a hit and ("", false) on any
-// error or absence — both mean "treat as cache miss." Reading more
-// than a handful of lines guards against headers that might've grown
-// in some future version while keeping the read bounded.
+// header line. The line prefix depends on the file's comment syntax
+// (`// pureast-cache-key:` for Go, `# pureast-cache-key:` for
+// Makefile/Dockerfile/YAML/etc.).
+//
+// Returns (key, true) on a hit and ("", false) on any error or
+// absence — both mean "treat as cache miss." Reading more than a
+// handful of lines guards against headers that might've grown in
+// some future version while keeping the read bounded.
 func readCachedKey(path string) (string, bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", false
 	}
 	defer f.Close()
+	prefix := cacheKeyHeaderLine(commentPrefixFor(path))
 	scanner := bufio.NewScanner(f)
 	for i := 0; i < 30 && scanner.Scan(); i++ {
 		line := scanner.Text()
-		if strings.HasPrefix(line, headerKeyPrefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, headerKeyPrefix)), true
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix)), true
 		}
 	}
 	return "", false
@@ -516,20 +558,34 @@ func readCachedKey(path string) (string, bool) {
 // preserve it where the directive doesn't explicitly call for a
 // change. Not a guarantee — Claude is an LLM — but the prompt nudges
 // hard, and the user reviews the diff before merging.
+// isGoTarget reports whether the output file is a Go source file.
+// Used to switch prompt instructions and the post-call sanity check
+// — Go targets demand `package <name>` at the top; non-Go targets
+// (Makefile, Dockerfile, YAML) have no such constraint.
+func isGoTarget(path string) bool {
+	return strings.HasSuffix(path, ".go")
+}
+
 func buildPrompt(args ClaudeEditArgs, bundle string) string {
 	var sb strings.Builder
+	goTarget := isGoTarget(args.OutputFile)
 
 	sb.WriteString("# pureast claude-edit\n\n")
-	sb.WriteString("You are editing a single Go source file. Below are:\n\n")
+	if goTarget {
+		sb.WriteString("You are editing a single Go source file. Below are:\n\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("You are editing %s. Below are:\n\n",
+			filepath.Base(args.OutputFile)))
+	}
 	sb.WriteString("1. Context: signatures from project / module sources, extracted by pureast.\n")
 	sb.WriteString("2. The current contents of the file you're editing (may be empty on first run).\n")
 	sb.WriteString("3. The task: what to produce or change.\n\n")
 
 	if strings.TrimSpace(bundle) == "" {
 		sb.WriteString("## Context\n\n")
-		sb.WriteString("(no external context — this is a seed file. Use only stdlib and what the task describes.)\n\n")
+		sb.WriteString("(no external context — produce the file from the task description alone.)\n\n")
 	} else {
-		sb.WriteString("## Context (signatures only — use these EXACT types)\n\n")
+		sb.WriteString("## Context (signatures only — use these EXACT types where applicable)\n\n")
 		sb.WriteString("```go\n")
 		sb.WriteString(strings.TrimRight(bundle, "\n"))
 		sb.WriteString("\n```\n\n")
@@ -538,7 +594,7 @@ func buildPrompt(args ClaudeEditArgs, bundle string) string {
 	current, err := os.ReadFile(args.OutputFile)
 	if err == nil && len(current) > 0 {
 		sb.WriteString("## Current file contents\n\n")
-		sb.WriteString("```go\n")
+		sb.WriteString("```\n")
 		sb.WriteString(strings.TrimRight(string(current), "\n"))
 		sb.WriteString("\n```\n\n")
 		sb.WriteString("PRESERVE existing hand edits where the task does not explicitly call for changes. ")
@@ -552,16 +608,27 @@ func buildPrompt(args ClaudeEditArgs, bundle string) string {
 	sb.WriteString("\n\n")
 
 	sb.WriteString("## Output format requirements (CRITICAL)\n\n")
-	sb.WriteString("Output ONLY raw Go source code. The entire response must be valid compilable Go.\n\n")
-	sb.WriteString("Required:\n")
-	sb.WriteString("- First non-comment line: `package <name>`\n")
-	sb.WriteString("- Imports in a single block at the top\n")
-	sb.WriteString("- Use only the exact types and signatures shown in the Context section\n\n")
-	sb.WriteString("Forbidden:\n")
-	sb.WriteString("- NO markdown fences (no ```go or ```)\n")
-	sb.WriteString("- NO prose, summary, commentary before/after/between code\n")
-	sb.WriteString("- NO 'Here is...', 'I've created...', '## Summary' or similar\n\n")
-	sb.WriteString("Match idiomatic Go: error wrapping, context propagation, zero values.\n")
+	if goTarget {
+		sb.WriteString("Output ONLY raw Go source code. The entire response must be valid compilable Go.\n\n")
+		sb.WriteString("Required:\n")
+		sb.WriteString("- First non-comment line: `package <name>`\n")
+		sb.WriteString("- Imports in a single block at the top\n")
+		sb.WriteString("- Use only the exact types and signatures shown in the Context section\n\n")
+		sb.WriteString("Forbidden:\n")
+		sb.WriteString("- NO markdown fences (no ```go or ```)\n")
+		sb.WriteString("- NO prose, summary, commentary before/after/between code\n")
+		sb.WriteString("- NO 'Here is...', 'I've created...', '## Summary' or similar\n\n")
+		sb.WriteString("Match idiomatic Go: error wrapping, context propagation, zero values.\n")
+	} else {
+		sb.WriteString(fmt.Sprintf(
+			"Output ONLY the raw contents of %s. The entire response must be valid for that file format.\n\n",
+			filepath.Base(args.OutputFile)))
+		sb.WriteString("Forbidden:\n")
+		sb.WriteString("- NO markdown fences (no ``` of any kind)\n")
+		sb.WriteString("- NO prose, summary, commentary before/after/between content\n")
+		sb.WriteString("- NO 'Here is...', 'I've created...', '## Summary' or similar\n\n")
+		sb.WriteString("Use the file format's native comment syntax (# for Make/Docker/YAML, // for Go).\n")
+	}
 
 	return sb.String()
 }
@@ -576,9 +643,18 @@ func buildPrompt(args ClaudeEditArgs, bundle string) string {
 // responsibility — Claude Code already manages those, and pureast
 // shouldn't try to second-guess them.
 func callClaude(ctx context.Context, args ClaudeEditArgs, prompt string) (string, error) {
-	claudeArgs := []string{"-p",
-		"Output ONLY raw Go source code starting with 'package'. " +
-			"No markdown, no prose, no summary. The entire response is a valid .go file."}
+	goTarget := isGoTarget(args.OutputFile)
+	var sysPrompt string
+	if goTarget {
+		sysPrompt = "Output ONLY raw Go source code starting with 'package'. " +
+			"No markdown, no prose, no summary. The entire response is a valid .go file."
+	} else {
+		sysPrompt = fmt.Sprintf("Output ONLY the raw contents of %s. "+
+			"No markdown fences, no prose, no summary. The entire response IS the file content.",
+			filepath.Base(args.OutputFile))
+	}
+
+	claudeArgs := []string{"-p", sysPrompt}
 	if args.ModelOverride != "" {
 		claudeArgs = append(claudeArgs, "--model", args.ModelOverride)
 	}
@@ -604,7 +680,7 @@ func callClaude(ctx context.Context, args ClaudeEditArgs, prompt string) (string
 	}
 
 	clean := stripCodeFences(string(body))
-	if !looksLikeGo(clean) {
+	if !looksLikeContent(clean, goTarget) {
 		// Don't write garbage to disk. The user can re-run after
 		// fixing the prompt; meanwhile their existing file is
 		// untouched (we haven't written anything yet).
@@ -612,8 +688,12 @@ func callClaude(ctx context.Context, args ClaudeEditArgs, prompt string) (string
 		if len(preview) > 200 {
 			preview = preview[:200] + "...[truncated]"
 		}
-		return "", fmt.Errorf("claude returned content that doesn't start with 'package' "+
-			"(likely a summary instead of code); preview:\n%s", preview)
+		expectation := "code (likely a summary instead)"
+		if goTarget {
+			expectation = "Go code starting with 'package' (likely a summary instead)"
+		}
+		return "", fmt.Errorf("claude returned content that doesn't look like %s; preview:\n%s",
+			expectation, preview)
 	}
 	return clean, nil
 }
@@ -634,9 +714,44 @@ func stripCodeFences(s string) string {
 	return strings.TrimSpace(strings.Join(out, "\n")) + "\n"
 }
 
-// looksLikeGo is a sanity check: did Claude actually return code, or
-// did it slip into summary mode and produce prose? "package " near
-// the top is the cheapest reliable signal.
+// looksLikeContent is a sanity check: did Claude actually return
+// file content, or did it slip into summary mode and produce prose?
+//
+// For Go targets, we require `package <name>` near the top — that's
+// the cheapest reliable signal that we got code.
+//
+// For non-Go targets, we can't be as strict (Makefile/Dockerfile/YAML
+// have no single mandatory leading token), so we apply a weaker
+// heuristic: reject obvious prose openers like "Here is", "I've
+// created", or markdown headings ("## Summary"). Anything else passes.
+func looksLikeContent(s string, goTarget bool) bool {
+	if goTarget {
+		return looksLikeGo(s)
+	}
+	// Non-Go: reject if the first non-empty line looks like prose
+	// or a markdown heading.
+	for _, line := range strings.SplitN(s, "\n", 5) {
+		t := strings.TrimSpace(line)
+		if t == "" {
+			continue
+		}
+		lower := strings.ToLower(t)
+		switch {
+		case strings.HasPrefix(t, "## "), strings.HasPrefix(t, "# Summary"), strings.HasPrefix(t, "# Output"):
+			// Markdown heading openers — likely a summary, not the file content.
+			return false
+		case strings.HasPrefix(lower, "here is"), strings.HasPrefix(lower, "here's "),
+			strings.HasPrefix(lower, "i've created"), strings.HasPrefix(lower, "i have created"),
+			strings.HasPrefix(lower, "this is the"):
+			return false
+		}
+		break
+	}
+	return strings.TrimSpace(s) != ""
+}
+
+// looksLikeGo is the Go-specific check used inside looksLikeContent.
+// "package " near the top is the cheapest reliable signal.
 func looksLikeGo(s string) bool {
 	for i, line := range strings.SplitN(s, "\n", 50) {
 		_ = i
@@ -652,13 +767,13 @@ func looksLikeGo(s string) bool {
 // writeWithHeader prepends the cache header to body and writes the
 // combined content atomically (write tmp, rename) so a Ctrl-C in the
 // middle doesn't corrupt the existing file.
+//
+// The header's comment prefix is derived from the output path's
+// extension (// for .go, # for Makefile/Dockerfile/yaml/etc.) so the
+// generated file remains syntactically valid in its target language.
 func writeWithHeader(path, task, key, body string) error {
-	hdr := buildHeader(task, key)
+	hdr := buildHeader(task, key, commentPrefixFor(path))
 
-	// If the body already starts with `package`, place the header
-	// above it. If Claude (against the instructions) produced its
-	// own header line, we still prepend ours — the cache key has
-	// to be discoverable.
 	full := hdr + body
 	if !strings.HasSuffix(full, "\n") {
 		full += "\n"
@@ -689,26 +804,21 @@ func writeWithHeader(path, task, key, body string) error {
 	return nil
 }
 
-func buildHeader(task, key string) string {
-	// Multi-line preamble. The cache-key line must be machine-
-	// findable (readCachedKey looks for headerKeyPrefix); the rest
-	// is human-facing context.
+func buildHeader(task, key, commentPrefix string) string {
+	// Multi-line preamble. The cache-key line must be machine-findable
+	// (readCachedKey looks for cacheKeyHeaderLine(commentPrefix)); the
+	// rest is human-facing context.
+	cp := commentPrefix
 	var sb strings.Builder
-	sb.WriteString("// Code generated by `pureast claude-edit`. DO NOT REGENERATE BY HAND;\n")
-	sb.WriteString("// instead, edit the //go:generate directive that produced this file.\n")
-	sb.WriteString(headerKeyPrefix)
-	sb.WriteString(key)
-	sb.WriteString("\n")
-	sb.WriteString("// pureast-task: ")
-	sb.WriteString(strings.ReplaceAll(task, "\n", " "))
-	sb.WriteString("\n")
-	sb.WriteString("// pureast-generated: ")
-	sb.WriteString(time.Now().UTC().Format(time.RFC3339))
-	sb.WriteString("\n")
-	sb.WriteString("//\n")
-	sb.WriteString("// Hand edits between regenerations are preserved: pureast only\n")
-	sb.WriteString("// re-invokes Claude when the cache key (task + context inputs)\n")
-	sb.WriteString("// changes. You own this file. Review every diff.\n")
+	sb.WriteString(cp + "Code generated by `pureast claude-edit`. DO NOT REGENERATE BY HAND;\n")
+	sb.WriteString(cp + "instead, edit the directive that produced this file.\n")
+	sb.WriteString(cp + "pureast-cache-key: " + key + "\n")
+	sb.WriteString(cp + "pureast-task: " + strings.ReplaceAll(task, "\n", " ") + "\n")
+	sb.WriteString(cp + "pureast-generated: " + time.Now().UTC().Format(time.RFC3339) + "\n")
+	sb.WriteString(strings.TrimRight(cp, " ") + "\n")
+	sb.WriteString(cp + "Hand edits between regenerations are preserved: pureast only\n")
+	sb.WriteString(cp + "re-invokes Claude when the cache key (task + context inputs)\n")
+	sb.WriteString(cp + "changes. You own this file. Review every diff.\n")
 	sb.WriteString("\n")
 	return sb.String()
 }
