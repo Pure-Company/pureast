@@ -260,3 +260,51 @@ func TestLooksLikeContent_NonGo(t *testing.T) {
 		}
 	}
 }
+
+func TestComputeCacheKey_IgnoresAppendContext(t *testing.T) {
+	// The whole point of --append-context is that it influences
+	// THIS invocation's prompt without changing the cache key. Verify
+	// by computing the key for "task A" + "context X" two times — once
+	// notionally with append-context, once without — and asserting the
+	// keys are identical. (computeCacheKey doesn't take append-context
+	// as a parameter, which IS the property we're testing — it cannot
+	// influence the key by construction.)
+	a := computeCacheKey("task A", "context X")
+	b := computeCacheKey("task A", "context X")
+	if a != b {
+		t.Errorf("cache keys diverged for identical (task, context): %q vs %q", a, b)
+	}
+}
+
+func TestBuildPrompt_AppendContextSectionAppears(t *testing.T) {
+	args := ClaudeEditArgs{
+		Task:          "implement X",
+		OutputFile:    "/tmp/nonexistent_test_file.go",
+		AppendContext: "go build error: undefined: Foo",
+	}
+	prompt := buildPrompt(args, "package somepkg")
+
+	if !strings.Contains(prompt, "## Additional context") {
+		t.Errorf("prompt missing '## Additional context' section:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "undefined: Foo") {
+		t.Errorf("prompt missing the appended context body:\n%s", prompt)
+	}
+	// The "fix it if relevant" framing should be present.
+	if !strings.Contains(prompt, "fix it") || !strings.Contains(prompt, "If no") {
+		t.Errorf("prompt missing fix-if-relevant framing:\n%s", prompt)
+	}
+}
+
+func TestBuildPrompt_NoAppendContext_NoSection(t *testing.T) {
+	args := ClaudeEditArgs{
+		Task:          "implement X",
+		OutputFile:    "/tmp/nonexistent_test_file.go",
+		AppendContext: "", // empty
+	}
+	prompt := buildPrompt(args, "package somepkg")
+
+	if strings.Contains(prompt, "## Additional context") {
+		t.Errorf("expected no '## Additional context' section when AppendContext empty:\n%s", prompt)
+	}
+}

@@ -129,6 +129,23 @@ type ClaudeEditArgs struct {
 	// doesn't call Claude or write any file. Useful for debugging the
 	// directive in a `go generate -n`-style "what would this do" mode.
 	DryRun bool
+
+	// NoCache skips the cache check and always invokes Claude. The
+	// header still gets written with the normal (version, task,
+	// context) cache key — the override is for THIS invocation only.
+	// Designed for use by external orchestrators (weave) that want
+	// to retry with extra context without polluting the steady-state
+	// cache discipline.
+	NoCache bool
+
+	// AppendContext is extra text appended to the prompt's context
+	// section. Does NOT influence the cache key (which is computed
+	// from the original task + sources only). Typical use: weave's
+	// reconcile loop passes the build output as appended context so
+	// Claude can fix compile errors. Pureast itself doesn't know or
+	// care what's in this string — it's just additional prompt
+	// material on this one call.
+	AppendContext string
 }
 
 func NewClaudeEditCommand() *cobra.Command {
@@ -196,6 +213,18 @@ review and correctness.`).
 	cmd.Flags().Bool("dry-run", false,
 		"Print the prompt and cache decision; do not call Claude or write the file.")
 
+	cmd.Flags().Bool("no-cache", false,
+		"Skip the cache-hit short-circuit; always invoke Claude. The header is still "+
+			"written with the normal (version, task, context) cache key — this flag "+
+			"only forces re-invocation for THIS call. Designed for orchestrators (e.g. "+
+			"weave's reconcile loop) that want to retry with --append-context.")
+
+	cmd.Flags().String("append-context", "",
+		"Extra text appended to the prompt's context section for this call. Does NOT "+
+			"influence the cache key. Typical use: weave's reconcile loop passes build "+
+			"errors so Claude can fix them. Pureast doesn't interpret this string — "+
+			"it's just additional prompt material.")
+
 	_ = cmd.MarkFlagRequired("task")
 	_ = cmd.MarkFlagRequired("output")
 
@@ -223,6 +252,8 @@ func parseClaudeEditArgs(cmd *cobra.Command, args []string) (ClaudeEditArgs, err
 	skip, _ := cmd.Flags().GetStringSlice("skip-module")
 	only, _ := cmd.Flags().GetStringSlice("only-module")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	noCache, _ := cmd.Flags().GetBool("no-cache")
+	appendCtx, _ := cmd.Flags().GetString("append-context")
 
 	if !validDumpKind(kind) {
 		return ClaudeEditArgs{}, fmt.Errorf(
@@ -259,6 +290,8 @@ func parseClaudeEditArgs(cmd *cobra.Command, args []string) (ClaudeEditArgs, err
 		SkipModule:    skip,
 		OnlyModule:    only,
 		DryRun:        dryRun,
+		NoCache:       noCache,
+		AppendContext: appendCtx,
 	}, nil
 }
 
@@ -287,11 +320,22 @@ func claudeEditAction(ctx context.Context, args ClaudeEditArgs) (cli.Output, err
 	// without touching anything. This is the property that makes
 	// hand-edits-between-regenerations safe: when nothing's changed,
 	// nothing happens.
-	if cached, ok := readCachedKey(args.OutputFile); ok && cached == key {
-		fmt.Fprintf(os.Stderr,
-			"pureast claude-edit: cache hit (key %s); %s unchanged\n",
-			shortHash(key), args.OutputFile)
-		return cli.Output{}, nil
+	//
+	// --no-cache bypasses this short-circuit and always invokes
+	// Claude. The HEADER still gets written with the normal
+	// (version, task, context) cache key, because that's the only
+	// identity pureast knows. Any extra context the caller wants in
+	// the prompt arrives via --append-context, which is NOT part of
+	// the key. This separation lets external orchestrators (weave's
+	// reconcile loop) retry with extra prompt material without
+	// polluting the steady-state cache discipline.
+	if !args.NoCache {
+		if cached, ok := readCachedKey(args.OutputFile); ok && cached == key {
+			fmt.Fprintf(os.Stderr,
+				"pureast claude-edit: cache hit (key %s); %s unchanged\n",
+				shortHash(key), args.OutputFile)
+			return cli.Output{}, nil
+		}
 	}
 
 	prompt := buildPrompt(args, bundle)
@@ -301,9 +345,15 @@ func claudeEditAction(ctx context.Context, args ClaudeEditArgs) (cli.Output, err
 		return cli.Output{Text: prompt}, nil
 	}
 
-	fmt.Fprintf(os.Stderr,
-		"pureast claude-edit: cache miss (key %s); calling claude...\n",
-		shortHash(key))
+	if args.NoCache {
+		fmt.Fprintf(os.Stderr,
+			"pureast claude-edit: --no-cache; calling claude (key %s)...\n",
+			shortHash(key))
+	} else {
+		fmt.Fprintf(os.Stderr,
+			"pureast claude-edit: cache miss (key %s); calling claude...\n",
+			shortHash(key))
+	}
 
 	body, err := callClaude(ctx, args, prompt)
 	if err != nil {
@@ -601,6 +651,21 @@ func buildPrompt(args ClaudeEditArgs, bundle string) string {
 		sb.WriteString("Add to or refine the file rather than rewriting it from scratch.\n\n")
 	} else {
 		sb.WriteString("## Current file contents\n\n(file does not exist yet — produce a fresh one)\n\n")
+	}
+
+	// Optional caller-supplied context. Used by orchestrators (weave's
+	// reconcile loop) to feed build errors back into the prompt. We
+	// don't interpret the string — it just becomes another section
+	// the model can read. The section is omitted when the flag is
+	// empty, so normal claude-edit invocations are unaffected.
+	if args.AppendContext != "" {
+		sb.WriteString("## Additional context\n\n")
+		sb.WriteString(strings.TrimRight(args.AppendContext, "\n"))
+		sb.WriteString("\n\n")
+		sb.WriteString("If the additional context above describes a problem (e.g. a build error, ")
+		sb.WriteString("a failing test, a lint finding), assess whether it relates to THIS file. ")
+		sb.WriteString("If yes, fix it while preserving the rest of the file. If no, return the ")
+		sb.WriteString("file essentially unchanged.\n\n")
 	}
 
 	sb.WriteString("## Task\n\n")
