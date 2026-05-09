@@ -31,13 +31,14 @@ type recorder struct {
 }
 
 type recordedCall struct {
-	NodeID string
-	Start  time.Time
-	End    time.Time
-	Err    error
+	NodeID   string
+	Start    time.Time
+	End      time.Time
+	Err      error
+	Override RunOverride
 }
 
-func (r *recorder) Run(ctx context.Context, projectRoot string, n Node) error {
+func (r *recorder) Run(ctx context.Context, projectRoot string, n Node, override RunOverride) error {
 	cur := r.active.Add(1)
 	for {
 		max := r.maxActive.Load()
@@ -70,7 +71,7 @@ func (r *recorder) Run(ctx context.Context, projectRoot string, n Node) error {
 
 	r.mu.Lock()
 	r.calls = append(r.calls, recordedCall{
-		NodeID: n.ID(), Start: start, End: end, Err: err,
+		NodeID: n.ID(), Start: start, End: end, Err: err, Override: override,
 	})
 	r.mu.Unlock()
 

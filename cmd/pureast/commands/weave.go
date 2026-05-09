@@ -27,6 +27,8 @@ type WeaveArgs struct {
 	ProjectRoot  string
 	Concurrency  int
 	SkipModTidy  bool
+	Reconcile    bool
+	MaxRounds    int
 }
 
 func NewWeaveCommand() *cobra.Command {
@@ -46,7 +48,13 @@ Source-type semantics for ordering:
 
 Equivalent to 'go generate -tags ignore ./...' but DAG-aware:
 independent directives run in parallel, build files run last after
-the project's go.mod is populated.`).
+the project's go.mod is populated.
+
+With --reconcile, weave runs 'go build ./...' after the normal pass
+completes. If the build fails, weave broadcasts the build output to
+every directive (via 'pureast claude-edit --no-cache --append-context')
+and re-runs the build. Repeats up to --max-rounds (default 3), or
+until no progress is being made (same build output across rounds).`).
 		ParseArgs(parseWeaveArgs).
 		Action(weaveAction).
 		Build()
@@ -59,6 +67,11 @@ the project's go.mod is populated.`).
 		"Maximum number of directives to run in parallel within one level.")
 	cmd.Flags().Bool("skip-mod-tidy", false,
 		"Don't run 'go mod tidy' before gomod-sourced levels.")
+	cmd.Flags().Bool("reconcile", false,
+		"After the normal run, run 'go build ./...' and broadcast any errors back "+
+			"to every directive as appended context. Repeats until green or capped.")
+	cmd.Flags().Int("max-rounds", 3,
+		"With --reconcile: maximum number of build-fix rounds.")
 
 	return cmd
 }
@@ -71,6 +84,8 @@ func parseWeaveArgs(cmd *cobra.Command, args []string) (WeaveArgs, error) {
 	root, _ := cmd.Flags().GetString("root")
 	concurrency, _ := cmd.Flags().GetInt("concurrency")
 	skipTidy, _ := cmd.Flags().GetBool("skip-mod-tidy")
+	reconcile, _ := cmd.Flags().GetBool("reconcile")
+	maxRounds, _ := cmd.Flags().GetInt("max-rounds")
 
 	if manifest == "" {
 		return WeaveArgs{}, fmt.Errorf("--manifest is required (default ./pureast.yaml)")
@@ -93,6 +108,8 @@ func parseWeaveArgs(cmd *cobra.Command, args []string) (WeaveArgs, error) {
 		ProjectRoot:  root,
 		Concurrency:  concurrency,
 		SkipModTidy:  skipTidy,
+		Reconcile:    reconcile,
+		MaxRounds:    maxRounds,
 	}, nil
 }
 
@@ -105,6 +122,8 @@ func weaveAction(ctx context.Context, args WeaveArgs) (cli.Output, error) {
 	summary, err := weave.Weave(ctx, m, args.ProjectRoot, weave.Options{
 		Concurrency: args.Concurrency,
 		SkipModTidy: args.SkipModTidy,
+		Reconcile:   args.Reconcile,
+		MaxRounds:   args.MaxRounds,
 		LogWriter:   os.Stderr,
 	})
 	if err != nil {
@@ -135,6 +154,13 @@ func printSummary(s *weave.Summary) {
 		len(s.Levels), totalNodes, totalDuration.Round(time.Millisecond))
 	if s.SkippedDownstream > 0 {
 		fmt.Fprintf(os.Stderr, ", %d skipped after upstream failure", s.SkippedDownstream)
+	}
+	if s.ReconcileRounds > 0 {
+		state := "converged"
+		if !s.ReconcileSucceeded {
+			state = "did NOT converge"
+		}
+		fmt.Fprintf(os.Stderr, "; reconcile: %d round(s), %s", s.ReconcileRounds, state)
 	}
 	fmt.Fprintln(os.Stderr)
 }

@@ -41,7 +41,27 @@ type Runner interface {
 	// projectRoot is the directory containing pureast.yaml. The
 	// node's directive paths are relative to its package directory,
 	// which is itself relative to projectRoot.
-	Run(ctx context.Context, projectRoot string, n Node) error
+	//
+	// override controls per-invocation behavior. The zero value is
+	// the standard cache-respecting call. Reconcile passes overrides
+	// with NoCache=true and AppendContext set to the build output.
+	Run(ctx context.Context, projectRoot string, n Node, override RunOverride) error
+}
+
+// RunOverride bundles per-call switches that orchestrators (like the
+// reconcile loop) can flip without affecting the steady-state
+// behavior. The zero value means "normal cache-respecting call."
+type RunOverride struct {
+	// NoCache passes --no-cache to claude-edit, forcing Claude to
+	// be invoked even when the cache would have hit. The header is
+	// still written with the normal (task, context) cache key, so
+	// future steady-state runs cache-hit naturally.
+	NoCache bool
+
+	// AppendContext is passed via --append-context. Adds extra
+	// prompt material without influencing the cache key. Reconcile
+	// uses this to feed the build error output back to Claude.
+	AppendContext string
 }
 
 // Result is the per-node outcome surfaced by Weave.
@@ -64,6 +84,12 @@ type Summary struct {
 	// Errors is the flat list of errors from any level (for the
 	// caller's quick-summary use).
 	Errors []error
+	// ReconcileRounds is the count of build-fix rounds attempted
+	// (0 when --reconcile not set or normal run already green).
+	ReconcileRounds int
+	// ReconcileSucceeded is true when the project ended up green
+	// (either before reconcile started or after a successful round).
+	ReconcileSucceeded bool
 }
 
 // Options control runtime behavior. Sensible zero values throughout.
@@ -85,6 +111,25 @@ type Options struct {
 	// level transition, one per node start/finish, summary at end).
 	// nil = os.Stderr.
 	LogWriter io.Writer
+
+	// Reconcile, if true, enables a build-error feedback loop after
+	// the normal weave run completes. The loop runs `go build ./...`,
+	// captures any failure output, broadcasts it to every directive
+	// in topological order via Runner.Run with NoCache=true and
+	// AppendContext=<build output>, then re-runs the build. Repeats
+	// up to MaxRounds (or 3 if 0). Stops on success, on no-progress
+	// (same build error blob across rounds), or when MaxRounds is hit.
+	Reconcile bool
+
+	// MaxRounds caps the reconcile loop. <=0 means default (3).
+	// Each round re-runs every directive once and re-runs go build,
+	// so this directly bounds API calls and wall-clock time.
+	MaxRounds int
+
+	// BuildCmd is the command run by the reconcile loop to detect
+	// completion. Default: ["go", "build", "./..."]. Tests inject
+	// a stub. The command is run from projectRoot.
+	BuildCmd []string
 }
 
 // Weave runs the manifest's directives in topological order. Within
@@ -134,7 +179,7 @@ func Weave(ctx context.Context, m *scaffold.Manifest, projectRoot string, opts O
 
 		fmt.Fprintf(logw, "weave: level %d/%d (%d node(s))\n",
 			i+1, len(levels), len(level))
-		results := runLevel(ctx, runner, projectRoot, level, concurrency, logw)
+		results := runLevel(ctx, runner, projectRoot, level, concurrency, RunOverride{}, logw)
 		summary.Levels = append(summary.Levels, results)
 
 		// Check for failures in this level. Fail-soft: complete the
@@ -157,6 +202,26 @@ func Weave(ctx context.Context, m *scaffold.Manifest, projectRoot string, opts O
 
 	fmt.Fprintf(logw, "weave: complete (%d level(s), %d node(s))\n",
 		len(levels), nodeCount(summary))
+
+	// Reconcile loop. After the normal multi-level run completes
+	// successfully, optionally run `go build ./...` and feed any
+	// failures back to every directive as appended context. Repeats
+	// until the build is green, no progress is being made, or the
+	// max-rounds cap is reached.
+	if opts.Reconcile {
+		// Reuse the already-constructed DAG g.
+		rounds, ok, recErr := reconcileLoop(
+			ctx, g, runner, projectRoot,
+			opts.MaxRounds, concurrency, opts.BuildCmd, logw,
+		)
+		summary.ReconcileRounds = rounds
+		summary.ReconcileSucceeded = ok
+		if recErr != nil {
+			summary.Errors = append(summary.Errors, recErr)
+			return summary, recErr
+		}
+	}
+
 	return summary, nil
 }
 
@@ -166,12 +231,17 @@ func Weave(ctx context.Context, m *scaffold.Manifest, projectRoot string, opts O
 //
 // Results are returned in the same order as the input level so they
 // stay aligned with deterministic DAG output.
+//
+// override is forwarded to every Runner invocation in this level.
+// Normal weave runs pass the zero value; reconcile passes
+// {NoCache: true, AppendContext: <build output>}.
 func runLevel(
 	ctx context.Context,
 	runner Runner,
 	projectRoot string,
 	level []Node,
 	concurrency int,
+	override RunOverride,
 	logw io.Writer,
 ) []Result {
 	results := make([]Result, len(level))
@@ -193,7 +263,7 @@ func runLevel(
 
 			fmt.Fprintf(logw, "  ▸ %s\n", n.ID())
 			start := time.Now()
-			err := runner.Run(ctx, projectRoot, n)
+			err := runner.Run(ctx, projectRoot, n, override)
 			dur := time.Since(start)
 			results[i] = Result{Node: n, Err: err, Duration: dur}
 			if err != nil {
@@ -244,7 +314,7 @@ type ClaudeEditRunner struct {
 	PureastBin string
 }
 
-func (r *ClaudeEditRunner) Run(ctx context.Context, projectRoot string, n Node) error {
+func (r *ClaudeEditRunner) Run(ctx context.Context, projectRoot string, n Node, override RunOverride) error {
 	bin := r.PureastBin
 	if bin == "" {
 		bin = "pureast"
@@ -280,6 +350,15 @@ func (r *ClaudeEditRunner) Run(ctx context.Context, projectRoot string, n Node) 
 		args = append(args, "--max-tokens", strconv.Itoa(n.File.MaxTokens))
 	}
 	args = append(args, "--output", n.File.Output)
+
+	// Override flags (set by reconcile loop only). The zero-value
+	// override is unused on a normal weave run.
+	if override.NoCache {
+		args = append(args, "--no-cache")
+	}
+	if override.AppendContext != "" {
+		args = append(args, "--append-context", override.AppendContext)
+	}
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	// claude-edit's --pkg / --output paths are interpreted relative
