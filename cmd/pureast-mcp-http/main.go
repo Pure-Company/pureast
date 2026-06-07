@@ -64,14 +64,10 @@ func main() {
 	))
 
 	// Legacy SSE transport — spec 2024-11-05.
-	// Two-endpoint model: GET /sse opens the event stream, POST /sse/message
-	// carries client→server JSON-RPC. The SDK handler manages both under one
-	// path prefix.
+	// The SSEHandler is self-contained: GET /sse opens the stream, and the
+	// handler itself issues a ?sessionid= endpoint URL for the client to POST
+	// messages back to — all on the same /sse path. No second handler needed.
 	mux.Handle("/sse", sdkmcp.NewSSEHandler(
-		func(r *http.Request) *sdkmcp.Server { return sdkServer },
-		nil,
-	))
-	mux.Handle("/sse/message", sdkmcp.NewSSEHandler(
 		func(r *http.Request) *sdkmcp.Server { return sdkServer },
 		nil,
 	))
