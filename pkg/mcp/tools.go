@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/token"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/Pure-Company/pureast/pkg/analyze"
@@ -27,11 +29,6 @@ func NewToolExecutor(workers int) *ToolExecutor {
 }
 
 // SearchSymbolsHandler searches for symbols using fuzzy matching.
-//
-// The fuzzy parameter is preserved for backward compatibility with
-// existing MCP clients: fuzzy=true allows subsequence/initials matches
-// (e.g. "Hndl" → "Handler"), fuzzy=false restricts to substring matches
-// only (score >= 400 in the underlying scoring).
 func (te *ToolExecutor) SearchSymbolsHandler() Handler {
 	return func(ctx context.Context, req MCPRequest) functor.Concurrent[MCPResponse] {
 		responseMonoid := NewResponseMonoid()
@@ -74,11 +71,6 @@ func (te *ToolExecutor) SearchSymbolsHandler() Handler {
 					maxResults,
 				)
 
-				// fuzzy=false restricts to substring-or-better matches.
-				// FuzzySearch's scoring guarantees: 1000 = exact, 800 =
-				// prefix, 400-600 = contains, 100-300 = subsequence,
-				// 50 = initials. The 400 cutoff drops subsequence and
-				// initials matches.
 				if !params.Arguments.Fuzzy {
 					filtered := matches[:0]
 					for _, m := range matches {
@@ -106,7 +98,11 @@ func (te *ToolExecutor) SearchSymbolsHandler() Handler {
 	}
 }
 
-// ExtractSymbolHandler extracts a symbol with dependencies
+// ExtractSymbolHandler extracts a symbol with dependencies.
+//
+// New params vs original:
+//   - format: "go" (default) | "md" — wraps output in a fenced code block
+//   - maxTokens: 0 = unbounded; truncates output to fit token budget
 func (te *ToolExecutor) ExtractSymbolHandler() Handler {
 	return func(ctx context.Context, req MCPRequest) functor.Concurrent[MCPResponse] {
 		responseMonoid := NewResponseMonoid()
@@ -114,13 +110,14 @@ func (te *ToolExecutor) ExtractSymbolHandler() Handler {
 		return functor.NewConcurrent(
 			responseMonoid,
 			func() MCPResponse {
-				// Parse parameters
 				var params struct {
 					Name      string `json:"name"`
 					Arguments struct {
-						Symbol  string `json:"symbol"`
-						Path    string `json:"path"`
-						Minimal bool   `json:"minimal"`
+						Symbol    string `json:"symbol"`
+						Path      string `json:"path"`
+						Minimal   bool   `json:"minimal"`
+						Format    string `json:"format,omitempty"`    // "go"|"md"
+						MaxTokens int    `json:"maxTokens,omitempty"` // 0 = unbounded
 					} `json:"arguments"`
 				}
 
@@ -128,24 +125,17 @@ func (te *ToolExecutor) ExtractSymbolHandler() Handler {
 					return ErrorResponse(req.ID, InvalidParams, "Invalid parameters")
 				}
 
-				// Load package
 				fset := token.NewFileSet()
 				pkgResult := loadPackage(fset, params.Arguments.Path, te.workers)
-
 				if !pkgResult.IsOk() {
 					return ErrorResponse(req.ID, InternalError, pkgResult.Error().Error())
 				}
-
 				pkgNode := pkgResult.Unwrap()
 
-				// Build dependency graph
 				declMap := extract.BuildPackageDeclMap(pkgNode)
 				graph := analyze.NewDependencyGraph(declMap)
-
-				// Resolve dependencies with associated code
 				deps := graph.ResolveWithAssociatedCode(params.Arguments.Symbol)
 
-				// Generate code
 				gen := codegen.NewGenerator(fset)
 				code, err := gen.GenerateMinimal(
 					pkgNode.Name,
@@ -153,30 +143,24 @@ func (te *ToolExecutor) ExtractSymbolHandler() Handler {
 					declMap,
 					deps,
 				)
-
 				if err != nil {
 					return ErrorResponse(req.ID, InternalError, err.Error())
 				}
 
-				// Return CallToolResult format
-				return MCPResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: map[string]interface{}{
-						"content": []map[string]interface{}{
-							{
-								"type": "text",
-								"text": code,
-							},
-						},
-					},
+				if params.Arguments.MaxTokens > 0 {
+					code, _ = extract.TruncateSymbols(code, params.Arguments.MaxTokens)
 				}
+				if params.Arguments.Format == "md" {
+					code = "```go\n" + strings.TrimRight(code, "\n") + "\n```\n"
+				}
+
+				return textResponse(req.ID, code)
 			},
 		)
 	}
 }
 
-// ListSymbolsHandler lists all symbols in a package
+// ListSymbolsHandler lists all symbols in a package.
 func (te *ToolExecutor) ListSymbolsHandler() Handler {
 	return func(ctx context.Context, req MCPRequest) functor.Concurrent[MCPResponse] {
 		responseMonoid := NewResponseMonoid()
@@ -184,7 +168,6 @@ func (te *ToolExecutor) ListSymbolsHandler() Handler {
 		return functor.NewConcurrent(
 			responseMonoid,
 			func() MCPResponse {
-				// Parse parameters
 				var params struct {
 					Name      string `json:"name"`
 					Arguments struct {
@@ -197,41 +180,23 @@ func (te *ToolExecutor) ListSymbolsHandler() Handler {
 					return ErrorResponse(req.ID, InvalidParams, "Invalid parameters")
 				}
 
-				// Load package
 				fset := token.NewFileSet()
 				pkgResult := loadPackage(fset, params.Arguments.Path, te.workers)
-
 				if !pkgResult.IsOk() {
 					return ErrorResponse(req.ID, InternalError, pkgResult.Error().Error())
 				}
-
 				pkgNode := pkgResult.Unwrap()
 
-				// Discover symbols
 				symbols := extract.DiscoverAllSymbols(pkgNode)
-
-				// Format output
 				text := extract.FormatSymbolList(symbols, params.Arguments.GroupByKind)
 
-				// Return CallToolResult format
-				return MCPResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: map[string]interface{}{
-						"content": []map[string]interface{}{
-							{
-								"type": "text",
-								"text": text,
-							},
-						},
-					},
-				}
+				return textResponse(req.ID, text)
 			},
 		)
 	}
 }
 
-// ExtractTypesHandler extracts type definitions
+// ExtractTypesHandler extracts type definitions (structs and interfaces).
 func (te *ToolExecutor) ExtractTypesHandler() Handler {
 	return func(ctx context.Context, req MCPRequest) functor.Concurrent[MCPResponse] {
 		responseMonoid := NewResponseMonoid()
@@ -239,7 +204,6 @@ func (te *ToolExecutor) ExtractTypesHandler() Handler {
 		return functor.NewConcurrent(
 			responseMonoid,
 			func() MCPResponse {
-				// Parse parameters
 				var params struct {
 					Name      string `json:"name"`
 					Arguments struct {
@@ -253,17 +217,13 @@ func (te *ToolExecutor) ExtractTypesHandler() Handler {
 					return ErrorResponse(req.ID, InvalidParams, "Invalid parameters")
 				}
 
-				// Load package
 				fset := token.NewFileSet()
 				pkgResult := loadPackage(fset, params.Arguments.Path, te.workers)
-
 				if !pkgResult.IsOk() {
 					return ErrorResponse(req.ID, InternalError, pkgResult.Error().Error())
 				}
-
 				pkgNode := pkgResult.Unwrap()
 
-				// Extract types
 				var types []extract.TypeDeclaration
 				if params.Arguments.StructsOnly {
 					types = extract.ExtractAllStructs(pkgNode)
@@ -273,37 +233,29 @@ func (te *ToolExecutor) ExtractTypesHandler() Handler {
 					types = extract.ExtractAllStructsAndInterfaces(pkgNode)
 				}
 
-				// Generate code
 				gen := codegen.NewGenerator(fset)
 				code, err := gen.GenerateTypesOnly(
 					pkgNode.Name,
 					types,
 					pkgNode.Deps.Imports.ToSlice(),
 				)
-
 				if err != nil {
 					return ErrorResponse(req.ID, InternalError, err.Error())
 				}
 
-				// Return CallToolResult format
-				return MCPResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: map[string]interface{}{
-						"content": []map[string]interface{}{
-							{
-								"type": "text",
-								"text": code,
-							},
-						},
-					},
-				}
+				return textResponse(req.ID, code)
 			},
 		)
 	}
 }
 
-// ShowDependenciesHandler shows dependencies for a symbol
+// ShowDependenciesHandler shows dependencies for a symbol.
+//
+// New params vs original:
+//   - format:    "text" (default) | "json"
+//   - depth:     0 = unbounded (default), N = N hops forward
+//   - minimal:   direct non-transitive deps only
+//   - locations: include file:line in text output
 func (te *ToolExecutor) ShowDependenciesHandler() Handler {
 	return func(ctx context.Context, req MCPRequest) functor.Concurrent[MCPResponse] {
 		responseMonoid := NewResponseMonoid()
@@ -311,12 +263,15 @@ func (te *ToolExecutor) ShowDependenciesHandler() Handler {
 		return functor.NewConcurrent(
 			responseMonoid,
 			func() MCPResponse {
-				// Parse parameters
 				var params struct {
 					Name      string `json:"name"`
 					Arguments struct {
-						Symbol string `json:"symbol"`
-						Path   string `json:"path"`
+						Symbol    string `json:"symbol"`
+						Path      string `json:"path"`
+						Format    string `json:"format,omitempty"`    // "text"|"json"
+						Depth     int    `json:"depth,omitempty"`     // 0=unbounded, N=N hops
+						Minimal   bool   `json:"minimal,omitempty"`   // direct deps only
+						Locations bool   `json:"locations,omitempty"` // include file:line
 					} `json:"arguments"`
 				}
 
@@ -324,45 +279,49 @@ func (te *ToolExecutor) ShowDependenciesHandler() Handler {
 					return ErrorResponse(req.ID, InvalidParams, "Invalid parameters")
 				}
 
-				// Load package
 				fset := token.NewFileSet()
 				pkgResult := loadPackage(fset, params.Arguments.Path, te.workers)
-
 				if !pkgResult.IsOk() {
 					return ErrorResponse(req.ID, InternalError, pkgResult.Error().Error())
 				}
-
 				pkgNode := pkgResult.Unwrap()
 
-				// Build dependency graph
 				declMap := extract.BuildPackageDeclMap(pkgNode)
 				graph := analyze.NewDependencyGraph(declMap)
 
-				// Resolve dependencies
-				deps := graph.ResolveTransitive(params.Arguments.Symbol)
-
-				// Format output
-				text := formatDependencies(params.Arguments.Symbol, deps)
-
-				// Return CallToolResult format
-				return MCPResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: map[string]interface{}{
-						"content": []map[string]interface{}{
-							{
-								"type": "text",
-								"text": text,
-							},
-						},
-					},
+				// Select resolution strategy.
+				// depth=0 via omitempty means "not set" → unbounded.
+				var deps astpkg.Dependencies
+				switch {
+				case params.Arguments.Minimal:
+					deps = graph.MinimalDependencies(params.Arguments.Symbol)
+				case params.Arguments.Depth > 0:
+					deps = graph.ResolveBounded(params.Arguments.Symbol, params.Arguments.Depth)
+				default:
+					deps = graph.ResolveWithAssociatedCode(params.Arguments.Symbol)
 				}
+				deps = analyze.CleanDependencies(deps, declMap)
+
+				var text string
+				switch params.Arguments.Format {
+				case "json":
+					text = formatDepsJSONForMCP(params.Arguments.Symbol, deps, params.Arguments.Locations, fset, declMap, params.Arguments.Path)
+				default: // text
+					header := "Dependencies for " + params.Arguments.Symbol + ":"
+					if params.Arguments.Locations {
+						text = header + "\n\n" + formatDepsLocationsForMCP(deps, fset, declMap, params.Arguments.Path)
+					} else {
+						text = header + "\n\n" + analyze.FormatDependencies(params.Arguments.Symbol, deps)
+					}
+				}
+
+				return textResponse(req.ID, text)
 			},
 		)
 	}
 }
 
-// Helper functions
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 func loadPackage(fset *token.FileSet, path string, workers int) result.Result[astpkg.PackageNode] {
 	pkgNode, err := extract.ExtractDirectoryConcurrent(fset, path, true, workers)
@@ -413,4 +372,121 @@ func formatDependencies(symbol string, deps astpkg.Dependencies) string {
 	}
 
 	return monoid.Reduce(monoid.NewStringJoinMonoid("\n"), parts)
+}
+
+// formatDepsJSONForMCP renders dependencies as structured JSON.
+// Mirrors cmd/pureast/commands/deps.go:formatDepsJSON but lives in pkg/mcp
+// so the HTTP/stdio MCP paths share it without importing cmd packages.
+func formatDepsJSONForMCP(
+	symbol string,
+	deps astpkg.Dependencies,
+	withLocations bool,
+	fset *token.FileSet,
+	declMap map[string]astpkg.DeclNode,
+	basePath string,
+) string {
+	type entry struct {
+		Name string `json:"name"`
+		File string `json:"file,omitempty"`
+		Line int    `json:"line,omitempty"`
+	}
+	type section struct {
+		Kind    string  `json:"kind"`
+		Entries []entry `json:"entries"`
+	}
+
+	sections := []section{}
+
+	emit := func(kind string, names []string) {
+		if len(names) == 0 {
+			return
+		}
+		sorted := make([]string, len(names))
+		copy(sorted, names)
+		sort.Strings(sorted)
+		entries := make([]entry, 0, len(sorted))
+		for _, n := range sorted {
+			e := entry{Name: n}
+			if withLocations {
+				if loc, line, ok := lookupFileLineForMCP(n, fset, declMap, basePath); ok {
+					e.File = loc
+					e.Line = line
+				}
+			}
+			entries = append(entries, e)
+		}
+		sections = append(sections, section{Kind: kind, Entries: entries})
+	}
+
+	emit("types", deps.Types.ToSlice())
+	emit("functions", deps.Functions.ToSlice())
+	emit("imports", deps.Imports.ToSlice())
+
+	out, err := json.MarshalIndent(map[string]interface{}{
+		"symbol":   symbol,
+		"sections": sections,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Sprintf(`{"error": %q}`, err.Error())
+	}
+	return string(out)
+}
+
+// formatDepsLocationsForMCP renders dependencies as text with file:line annotations.
+func formatDepsLocationsForMCP(
+	deps astpkg.Dependencies,
+	fset *token.FileSet,
+	declMap map[string]astpkg.DeclNode,
+	basePath string,
+) string {
+	var b strings.Builder
+
+	emit := func(label string, names []string) {
+		if len(names) == 0 {
+			return
+		}
+		sorted := make([]string, len(names))
+		copy(sorted, names)
+		sort.Strings(sorted)
+		fmt.Fprintf(&b, "%s (%d):\n", label, len(sorted))
+		for _, n := range sorted {
+			if loc, line, ok := lookupFileLineForMCP(n, fset, declMap, basePath); ok {
+				fmt.Fprintf(&b, "  - %s  (%s:%d)\n", n, loc, line)
+			} else {
+				fmt.Fprintf(&b, "  - %s\n", n)
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	emit("Types", deps.Types.ToSlice())
+	emit("Functions", deps.Functions.ToSlice())
+	emit("Imports", deps.Imports.ToSlice())
+
+	return b.String()
+}
+
+func lookupFileLineForMCP(
+	name string,
+	fset *token.FileSet,
+	declMap map[string]astpkg.DeclNode,
+	basePath string,
+) (string, int, bool) {
+	decl, ok := declMap[name]
+	if !ok || decl.Decl == nil {
+		return "", 0, false
+	}
+	pos := fset.Position(decl.Decl.Pos())
+	if pos.Filename == "" {
+		return "", 0, false
+	}
+	abs, err := filepath.Abs(basePath)
+	if err != nil {
+		return pos.Filename, pos.Line, true
+	}
+	rel, err := filepath.Rel(abs, pos.Filename)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return pos.Filename, pos.Line, true
+	}
+	return rel, pos.Line, true
 }

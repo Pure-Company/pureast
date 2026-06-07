@@ -52,6 +52,9 @@ func (te *ToolExecutor) DumpPackageHandler() Handler {
 						Path         string `json:"path"`
 						Kind         string `json:"kind,omitempty"`
 						ExportedOnly bool   `json:"exportedOnly,omitempty"`
+						Bodies       bool   `json:"bodies,omitempty"`
+						IncludeTests bool   `json:"includeTests,omitempty"`
+						NoDocs       bool   `json:"noDocs,omitempty"`
 						Format       string `json:"format,omitempty"`
 						MaxTokens    int    `json:"maxTokens,omitempty"`
 					} `json:"arguments"`
@@ -71,6 +74,9 @@ func (te *ToolExecutor) DumpPackageHandler() Handler {
 				text := renderDumpForMCP(fset, pkgNode, dumpRenderOptions{
 					Kind:         params.Arguments.Kind,
 					ExportedOnly: params.Arguments.ExportedOnly,
+					Bodies:       params.Arguments.Bodies,
+					IncludeTests: params.Arguments.IncludeTests,
+					NoDocs:       params.Arguments.NoDocs,
 					Format:       params.Arguments.Format,
 					MaxTokens:    params.Arguments.MaxTokens,
 				})
@@ -157,6 +163,7 @@ func (te *ToolExecutor) DiffSinceHandler() Handler {
 					Arguments struct {
 						Ref       string `json:"ref"`
 						Path      string `json:"path"`
+						Bodies    bool   `json:"bodies,omitempty"`
 						Format    string `json:"format,omitempty"`
 						MaxTokens int    `json:"maxTokens,omitempty"`
 					} `json:"arguments"`
@@ -193,6 +200,7 @@ func (te *ToolExecutor) DiffSinceHandler() Handler {
 				}
 
 				text := renderDumpForMCP(fset, pkgNode, dumpRenderOptions{
+					Bodies:    params.Arguments.Bodies,
 					Format:    params.Arguments.Format,
 					MaxTokens: params.Arguments.MaxTokens,
 				})

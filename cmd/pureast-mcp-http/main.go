@@ -143,9 +143,11 @@ func buildSDKServer(workers int) *sdkmcp.Server {
 	// ── extract_symbol ────────────────────────────────────────────────────────
 
 	type ExtractSymbolArgs struct {
-		Symbol  string `json:"symbol"  jsonschema:"Symbol name"`
-		Path    string `json:"path"    jsonschema:"Package path"`
-		Minimal bool   `json:"minimal" jsonschema:"Extract minimal dependencies only"`
+		Symbol    string `json:"symbol"    jsonschema:"Symbol name"`
+		Path      string `json:"path"      jsonschema:"Package path"`
+		Minimal   bool   `json:"minimal"   jsonschema:"Extract minimal dependencies only"`
+		Format    string `json:"format"    jsonschema:"Output format: go (default) or md"`
+		MaxTokens int    `json:"maxTokens" jsonschema:"Token budget — 0 = unbounded"`
 	}
 	sdkmcp.AddTool(server,
 		&sdkmcp.Tool{
@@ -193,8 +195,12 @@ func buildSDKServer(workers int) *sdkmcp.Server {
 	// ── show_dependencies ─────────────────────────────────────────────────────
 
 	type ShowDependenciesArgs struct {
-		Symbol string `json:"symbol" jsonschema:"Symbol name"`
-		Path   string `json:"path"   jsonschema:"Package path"`
+		Symbol    string `json:"symbol"    jsonschema:"Symbol name"`
+		Path      string `json:"path"      jsonschema:"Package path"`
+		Format    string `json:"format"    jsonschema:"Output format: text (default) or json"`
+		Depth     int    `json:"depth"     jsonschema:"Max hops forward — 0 = unbounded (default)"`
+		Minimal   bool   `json:"minimal"   jsonschema:"Direct non-transitive deps only"`
+		Locations bool   `json:"locations" jsonschema:"Include file:line in output"`
 	}
 	sdkmcp.AddTool(server,
 		&sdkmcp.Tool{
@@ -212,6 +218,9 @@ func buildSDKServer(workers int) *sdkmcp.Server {
 		Path         string `json:"path"         jsonschema:"Package path"`
 		Kind         string `json:"kind"         jsonschema:"Filter by kind: all, struct, interface, function, method, const, var"`
 		ExportedOnly bool   `json:"exportedOnly" jsonschema:"Only show exported symbols"`
+		Bodies       bool   `json:"bodies"       jsonschema:"Include function bodies (default: signatures only)"`
+		IncludeTests bool   `json:"includeTests" jsonschema:"Include _test.go symbols"`
+		NoDocs       bool   `json:"noDocs"       jsonschema:"Strip doc comments"`
 		Format       string `json:"format"       jsonschema:"Output format: go or md"`
 		MaxTokens    int    `json:"maxTokens"    jsonschema:"Token budget (0 = unbounded)"`
 	}
@@ -249,6 +258,7 @@ func buildSDKServer(workers int) *sdkmcp.Server {
 	type DiffSinceArgs struct {
 		Ref       string `json:"ref"       jsonschema:"Git ref to diff against (branch, tag, or commit)"`
 		Path      string `json:"path"      jsonschema:"Repository path (defaults to '.')"`
+		Bodies    bool   `json:"bodies"    jsonschema:"Include function bodies (default: signatures only)"`
 		Format    string `json:"format"    jsonschema:"Output format: go or md"`
 		MaxTokens int    `json:"maxTokens" jsonschema:"Token budget (0 = unbounded)"`
 	}
