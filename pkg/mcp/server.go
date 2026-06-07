@@ -300,6 +300,11 @@ func listToolsHandler() Handler {
 									"type":        "string",
 									"description": "Repository path (defaults to '.')",
 								},
+								"bodies": map[string]interface{}{
+									"type":        "boolean",
+									"description": "Include function bodies (default: signatures only)",
+									"default":     false,
+								},
 								"format": map[string]interface{}{
 									"type":        "string",
 									"description": "Output format: 'go' or 'md'",
