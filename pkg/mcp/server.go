@@ -110,8 +110,10 @@ func listToolsHandler() Handler {
 			func() MCPResponse {
 				tools := []map[string]interface{}{
 					{
-						"name":        "search_symbols",
-						"description": "Search for symbols in a Go package using fuzzy matching",
+						"name": "search_symbols",
+						"description": "Search for Go symbols (types, functions, interfaces) by name using fuzzy matching. " +
+							"Use this when the user mentions a symbol by name but you don't know which file or package it lives in. " +
+							"Also use when exploring an unfamiliar codebase to locate entry points before reading code.",
 						"inputSchema": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
@@ -142,8 +144,11 @@ func listToolsHandler() Handler {
 						},
 					},
 					{
-						"name":        "extract_symbol",
-						"description": "Extract a symbol with all its dependencies",
+						"name": "extract_symbol",
+						"description": "Extract a Go symbol together with every type, function, and import it depends on — " +
+							"producing a minimal compilable snippet. Use this when you need to deeply understand or modify a " +
+							"specific symbol: before editing a struct, implementing an interface, or fixing a function. " +
+							"Prefer dump_package first for orientation, then extract_symbol to drill into a specific target.",
 						"inputSchema": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
@@ -165,8 +170,10 @@ func listToolsHandler() Handler {
 						},
 					},
 					{
-						"name":        "list_symbols",
-						"description": "List all symbols in a package",
+						"name": "list_symbols",
+						"description": "List all symbol names in a Go package grouped by kind (struct, interface, function, etc). " +
+							"Use this for a quick inventory of what exists in a package — cheaper than dump_package when you " +
+							"only need names, not signatures. Good first step when a user asks 'what's in this package?'.",
 						"inputSchema": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
@@ -184,8 +191,11 @@ func listToolsHandler() Handler {
 						},
 					},
 					{
-						"name":        "extract_types",
-						"description": "Extract type definitions (structs and interfaces)",
+						"name": "extract_types",
+						"description": "Extract all struct and interface definitions from a Go package. " +
+							"Use this when planning a refactor that touches the type system, when checking interface compliance, " +
+							"or when generating code that needs to match existing types. Use structsOnly or interfacesOnly " +
+							"to narrow scope when you know what you're looking for.",
 						"inputSchema": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
@@ -208,8 +218,11 @@ func listToolsHandler() Handler {
 						},
 					},
 					{
-						"name":        "show_dependencies",
-						"description": "Show dependencies for a symbol",
+						"name": "show_dependencies",
+						"description": "Show the full dependency tree for a Go symbol — what types, functions, and imports it pulls in. " +
+							"Call this before editing or moving a symbol to understand its blast radius. " +
+							"Use format='json' with locations=true for precise file:line info when you need to navigate to dependents. " +
+							"For the reverse direction (who depends ON this symbol), use reverse_deps instead.",
 						"inputSchema": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
@@ -228,8 +241,11 @@ func listToolsHandler() Handler {
 					{
 						"name": "dump_package",
 						"description": "Compact, signatures-mostly dump of every symbol in a Go package. " +
-							"This is the LLM-context flagship: use it first to get oriented in an " +
-							"unfamiliar package before drilling into specific symbols with extract_symbol.",
+							"This is the LLM-context flagship tool: call it first whenever starting work on an unfamiliar package, " +
+							"before any refactor, feature addition, or code review. Gives you the full shape of the package " +
+							"(all types, functions, methods, consts, vars) without requiring you to read individual files. " +
+							"Use maxTokens to stay within context limits on large packages. " +
+							"Follow up with extract_symbol to drill into specific symbols.",
 						"inputSchema": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
@@ -263,8 +279,11 @@ func listToolsHandler() Handler {
 					},
 					{
 						"name": "reverse_deps",
-						"description": "Find which symbols use a given symbol. Use this for impact analysis: " +
-							"before suggesting a refactor of X, call reverse_deps to see what depends on X.",
+						"description": "Find all symbols that depend on (use) a given symbol — the reverse of show_dependencies. " +
+							"Use this for impact analysis before any rename, signature change, deletion, or refactor: " +
+							"call reverse_deps first to see everything that will break. " +
+							"Set transitive=true to find indirect callers too (callers of callers). " +
+							"Complements show_dependencies: use both together for a full picture of a symbol's position in the codebase.",
 						"inputSchema": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
@@ -287,8 +306,11 @@ func listToolsHandler() Handler {
 					},
 					{
 						"name": "diff_since",
-						"description": "Dump symbols from Go files that have changed since a git ref. " +
-							"Intended for PR-review context: feed Claude only what's new in the branch.",
+						"description": "Dump symbols only from Go files that changed since a git ref (branch, tag, or commit). " +
+							"Use this automatically when reviewing a PR or branch: instead of loading the entire codebase, " +
+							"call diff_since with ref='main' to see only what's new or changed. " +
+							"Also useful before a merge to summarize what a branch introduces. " +
+							"Set bodies=true when you need full function implementations, not just signatures.",
 						"inputSchema": map[string]interface{}{
 							"type": "object",
 							"properties": map[string]interface{}{
